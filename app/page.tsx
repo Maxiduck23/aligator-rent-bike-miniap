@@ -54,6 +54,14 @@ function initData(): string {
   return window.Telegram?.WebApp?.initData || '';
 }
 
+function telegramStatus(): string {
+  if (typeof window === 'undefined') return 'server';
+  const tg = window.Telegram?.WebApp;
+  if (!tg) return 'telegram-web-app.js не загружен';
+  if (!tg.initData) return 'initData нет: открой через кнопку бота в Telegram';
+  return 'Telegram OK';
+}
+
 async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -85,10 +93,12 @@ function WarningPills({ warnings }: { warnings?: string[] | null }) {
 export default function Page() {
   const [tab, setTab] = useState<Tab>('bikes');
   const [toast, setToast] = useState('');
+  const [tgStatus, setTgStatus] = useState('loading');
 
   useEffect(() => {
     window.Telegram?.WebApp?.ready();
     window.Telegram?.WebApp?.expand();
+    setTgStatus(telegramStatus());
   }, []);
 
   function showToast(text: string) {
@@ -103,7 +113,7 @@ export default function Page() {
           <div className="title">🚲 Aligator Rent CRM</div>
           <div className="sub">Bike-centered Mini App: долги, аренды, правила оплаты, Telegram привязки</div>
         </div>
-        <div className="badge">admin only</div>
+        <div className="badge" title={tgStatus}>admin only · {tgStatus === 'Telegram OK' ? 'TG OK' : 'TG ?'}</div>
       </div>
 
       <div className="tabs">
