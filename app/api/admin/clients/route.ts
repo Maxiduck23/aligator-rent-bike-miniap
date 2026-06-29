@@ -10,8 +10,16 @@ export async function GET(req: NextRequest) {
     let query = supabaseAdmin.from('miniapp_clients').select('*').order('id', { ascending: false }).limit(200);
     if (q) {
       const id = Number(q);
-      if (Number.isFinite(id)) query = query.or(`id.eq.${id},name.ilike.%${q}%`);
-      else query = query.ilike('name', `%${q}%`);
+      const safe = q.replace(/[,()]/g, ' ');
+      const parts = [
+        `name.ilike.%${safe}%`,
+        `phone.ilike.%${safe}%`,
+        `email.ilike.%${safe}%`,
+        `address.ilike.%${safe}%`,
+        `doc_number.ilike.%${safe}%`
+      ];
+      if (Number.isFinite(id)) parts.unshift(`id.eq.${id}`);
+      query = query.or(parts.join(','));
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -30,7 +38,11 @@ export async function POST(req: NextRequest) {
       p_phone: optionalString(body.phone),
       p_telegram_id: optionalNumber(body.telegram_id),
       p_notes: optionalString(body.notes),
-      p_admin_tg_id: auth.telegramId
+      p_admin_tg_id: auth.telegramId,
+      p_email: optionalString(body.email),
+      p_address: optionalString(body.address),
+      p_doc_type: optionalString(body.doc_type),
+      p_doc_number: optionalString(body.doc_number)
     });
     if (error) throw error;
     return ok(data, 201);

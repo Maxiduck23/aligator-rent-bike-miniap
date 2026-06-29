@@ -5,22 +5,53 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 type ParsedLine = { line: string; bike_id: number; amount: number };
 
+function parseAmount(raw: string, suffix?: string): number {
+  const normalized = raw.replace(",", ".").trim();
+  const n = Number(normalized);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`Некорректная сумма: ${raw}`);
+  // 2к / 2k / 2.5к = 2000 / 2500. 2000к не умножаем второй раз.
+  if (suffix && /^(к|k)$/i.test(suffix.trim()) && n < 1000) return Math.round(n * 1000);
+  return n;
+}
+
 function parsePaymentLines(text: string): ParsedLine[] {
-  return text
-    .split(/\r?\n/)
+  const normalizedText = text
+    .replace(/[–—]/g, "-")
+    .replace(/\u00a0/g, " ")
+    .trim();
+
+  const rawLines = normalizedText
+    .split(/\r?\n|;+/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const normalized = line.replace(",", ".");
-      const match = normalized.match(
-        /(?:^|\s)#?(\d{1,5})\s*(?:велик|вел|bike|vel|b)?\s+(\d+(?:\.\d{1,2})?)\s*(?:kč|kc|czk|оплата|опл|paid)?/i,
+    .filter(Boolean);
+
+  const results: ParsedLine[] = [];
+
+  for (const line of rawLines) {
+    const matches = Array.from(
+      line.matchAll(
+        /(?:^|\s)(?:(?:#?(\d{1,5})\s*(?:велик|вел|bike|vel|b|байк)?|(?:велик|вел|bike|vel|b|байк)\s*#?(\d{1,5}))\s*[:=\-]?\s*)(\d+(?:[\.,]\d{1,2})?)\s*(к|k)?\b/giu,
+      ),
+    );
+
+    if (!matches.length) {
+      throw new Error(
+        `Не понял строку: "${line}". Примеры: "24 велик 2000 оплата", "25 5к", "вел 31 2500"`,
       );
-      if (!match)
-        throw new Error(
-          `Не понял строку: "${line}". Формат: "24 велик 2000 оплата"`,
-        );
-      return { line, bike_id: Number(match[1]), amount: Number(match[2]) };
-    });
+    }
+
+    for (const match of matches) {
+      const bikeId = Number(match[1] || match[2]);
+      const amount = parseAmount(match[3], match[4]);
+      if (!Number.isFinite(bikeId) || bikeId <= 0) {
+        throw new Error(`Некорректный bike_id в строке: "${line}"`);
+      }
+      results.push({ line: match[0].trim() || line, bike_id: bikeId, amount });
+    }
+  }
+
+  if (!results.length) throw new Error("Не найдено ни одной оплаты");
+  return results;
 }
 
 export async function POST(req: NextRequest) {

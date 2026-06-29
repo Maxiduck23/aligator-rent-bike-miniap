@@ -37,6 +37,11 @@ type Client = {
   id: number;
   name: string;
   phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  doc_type?: string | null;
+  doc_number?: string | null;
+  notes?: string | null;
   telegram_id?: number | null;
   active_bike_ids?: number[];
 };
@@ -118,7 +123,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "bikes" | "balances" | "debts" | "requests" | "exceptions" | "clients";
+  "menu" | "bikes" | "balances" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -197,6 +202,11 @@ function today() {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 10);
+}
+
+function inviteParam(): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("invite")?.trim().toUpperCase() || "";
 }
 
 function currentMonth() {
@@ -405,10 +415,16 @@ export default function Page() {
 }
 
 function AdminApp({ showToast }: { showToast: (s: string) => void }) {
-  const [tab, setTab] = useState<AdminTab>("bikes");
+  const [tab, setTab] = useState<AdminTab>("menu");
   return (
     <>
       <div className="tabs">
+        <button
+          className={`tab ${tab === "menu" ? "active" : ""}`}
+          onClick={() => setTab("menu")}
+        >
+          🧭 Меню
+        </button>
         <button
           className={`tab ${tab === "bikes" ? "active" : ""}`}
           onClick={() => setTab("bikes")}
@@ -446,6 +462,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
           👤 Клиенты
         </button>
       </div>
+      {tab === "menu" && <AdminMenuTab setTab={setTab} />}
       {tab === "bikes" && <BikesTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
       {tab === "debts" && <DebtsTab showToast={showToast} />}
@@ -453,6 +470,49 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       {tab === "exceptions" && <ExceptionsTab />}
       {tab === "clients" && <ClientsTab showToast={showToast} />}
     </>
+  );
+}
+
+function AdminMenuTab({ setTab }: { setTab: (tab: AdminTab) => void }) {
+  const migrated = [
+    ["🚲 Велики / найти велик", "bikes", "поиск, карточка велика, аренда, батареи, правило оплаты"],
+    ["💰 Финансы / оплаты / долги", "balances", "баланс клиента, ручная оплата, начисления"],
+    ["⚠️ Должники / долги", "debts", "фильтры, rent_plan, реальные долги, закрытие планов"],
+    ["🔑 Ключи / клиенты", "clients", "создание ссылки входа через Telegram-бота"],
+    ["📝 Запросы клиентов", "requests", "подтверждение изменений правила оплаты"],
+    ["🚨 Исключения", "exceptions", "места, где учёт может врать"],
+  ] as const;
+  const pending = [
+    "🛠 сервисные заявки / ремонты",
+    "💸 рабочие расходы и постоянные расходы",
+    "🧩 прайс услуг / пакеты ТО / мойка",
+    "📢 массовые уведомления",
+  ];
+  return (
+    <div className="grid">
+      <div className="card">
+        <h3>🧭 Старое меню бота перенесено сюда</h3>
+        <p className="muted">
+          Бот теперь должен быть только входом и быстрым выводом. Основной ввод — через Mini App.
+          Старые кнопки из Telegram-клавиатуры убраны из бота, чтобы не было двух разных интерфейсов.
+        </p>
+        <div className="list">
+          {migrated.map(([label, tab, description]) => (
+            <button key={label} className="item" onClick={() => setTab(tab as AdminTab)}>
+              <div className="space"><b>{label}</b><span className="pill ok">в Mini App</span></div>
+              <div className="small muted">{description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="card">
+        <h3>⏳ Ещё надо перенести позже</h3>
+        <p className="muted">Эти блоки лучше переносить отдельным патчем, чтобы не сломать аренду и оплаты.</p>
+        <div className="list">
+          {pending.map((x) => <div className="item warn" key={x}>{x}</div>)}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1378,7 +1438,13 @@ function BalancesTab({ showToast }: { showToast: (s: string) => void }) {
                 #{c.id} {c.name}
               </b>
               <div className="small muted">
-                {c.phone || "-"} · bikes{" "}
+                📞 {c.phone || "-"} · 📧 {c.email || "-"}
+              </div>
+              <div className="small muted">
+                🏠 {c.address || "адрес не заполнен"}
+              </div>
+              <div className="small muted">
+                🪪 {c.doc_type || "документ"}: {c.doc_number || "номер не заполнен"} · bikes{" "}
                 {(c.active_bike_ids || []).join(", ") || "-"}
               </div>
             </button>
@@ -1749,22 +1815,42 @@ function QuickPaymentBlock({
   const [paymentDate, setPaymentDate] = useState(today());
   const [method, setMethod] = useState("manual_chat");
   const [note, setNote] = useState("quick payment from miniapp");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [lastResult, setLastResult] = useState<any>(null);
+
   async function submit() {
-    const res = await api<any>("/api/admin/payments/quick-text", {
-      method: "POST",
-      body: JSON.stringify({ text, payment_date: paymentDate, method, note }),
-    });
-    showToast(`Быстрый ввод: обработано ${res.parsed_count || 0} строк`);
-    setText("");
-    await reload();
+    setError("");
+    setLastResult(null);
+    if (!text.trim()) {
+      setError("Вставь хотя бы одну строку оплаты.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await api<any>("/api/admin/payments/quick-text", {
+        method: "POST",
+        body: JSON.stringify({ text, payment_date: paymentDate, method, note }),
+      });
+      setLastResult(res);
+      showToast(`Быстрый ввод: обработано ${res.parsed_count || 0} строк`);
+      setText("");
+      await reload();
+    } catch (e: any) {
+      const message = e?.message || "Быстрый ввод оплат не сработал";
+      setError(message);
+      showToast(message);
+    } finally {
+      setLoading(false);
+    }
   }
+
   return (
     <div className="card">
       <h3>⚡ Быстрый ввод реальных оплат</h3>
       <p className="small muted">
-        Формат по строкам: <span className="code">24 велик 2000 оплата</span>.
-        Это создаёт client_payments и закрывает старые rent-долги active аренды
-        по этому велику. Если долгов нет — сумма остаётся авансом.
+        Формат по строкам: <span className="code">24 велик 2000 оплата</span>, <span className="code">25 5к</span>, <span className="code">вел 31 2500</span>.
+        Это создаёт реальные <span className="code">client_payments</span> и закрывает старые rent-долги active аренды по этому велику. Если долгов нет — сумма остаётся авансом.
       </p>
       <div className="formgrid">
         <label>
@@ -1797,7 +1883,7 @@ function QuickPaymentBlock({
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"24 велик 2000 оплата\n25 велик 5000 оплата"}
+          placeholder={"24 велик 2000 оплата\n25 5к\nвел 31 2500"}
         />
       </label>
       <label>
@@ -1808,9 +1894,28 @@ function QuickPaymentBlock({
           onChange={(e) => setNote(e.target.value)}
         />
       </label>
-      <button className="btn primary" disabled={!text.trim()} onClick={submit}>
-        Записать оплаты
+      <button className="btn primary" disabled={!text.trim() || loading} onClick={submit}>
+        {loading ? "Записываю..." : "Записать оплаты"}
       </button>
+      {error && (
+        <div className="item critical" style={{ marginTop: 10 }}>
+          <b>Ошибка быстрого ввода</b>
+          <p className="dangerText">{error}</p>
+        </div>
+      )}
+      {lastResult && (
+        <div className="item ok" style={{ marginTop: 10 }}>
+          <div className="space">
+            <b>Оплаты записаны</b>
+            <span className="pill ok">{lastResult.parsed_count || 0} строк</span>
+          </div>
+          {(lastResult.results || []).map((r: any, idx: number) => (
+            <div key={idx} className="small muted" style={{ marginTop: 6 }}>
+              #{r.bike_id}: {money(r.amount)} · payment #{r.result?.payment_id || "?"} · закрыто {money(r.result?.allocated_amount || 0)} · аванс {money(r.result?.advance_amount || 0)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2149,6 +2254,11 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
   const [q, setQ] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [address, setAddress] = useState("");
+  const [docType, setDocType] = useState("ID card");
+  const [docNumber, setDocNumber] = useState("");
+  const [notes, setNotes] = useState("");
   const [lastInvite, setLastInvite] = useState<any>(null);
   const [inviteError, setInviteError] = useState("");
   async function load() {
@@ -2162,10 +2272,15 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
   async function create() {
     await api("/api/admin/clients", {
       method: "POST",
-      body: JSON.stringify({ name, phone }),
+      body: JSON.stringify({ name, phone, email, address, doc_type: docType, doc_number: docNumber, notes }),
     });
     setName("");
     setPhone("");
+    setEmail("");
+    setAddress("");
+    setDocType("ID card");
+    setDocNumber("");
+    setNotes("");
     showToast("Клиент создан");
     await load();
   }
@@ -2220,7 +2335,13 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
                 )}
               </div>
               <div className="small muted">
-                {c.phone || "-"} · bikes{" "}
+                📞 {c.phone || "-"} · 📧 {c.email || "-"}
+              </div>
+              <div className="small muted">
+                🏠 {c.address || "адрес не заполнен"}
+              </div>
+              <div className="small muted">
+                🪪 {c.doc_type || "документ"}: {c.doc_number || "номер не заполнен"} · bikes{" "}
                 {(c.active_bike_ids || []).join(", ") || "-"}
               </div>
               <button
@@ -2251,24 +2372,80 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
           </div>
         )}
         <hr className="hr" />
-        <h3>Создать клиента</h3>
+        <h3>Создать клиента / данные договора</h3>
+        <p className="muted">
+          Поля сделаны под бумажный договор: имя, адрес, телефон/e-mail и документ.
+          Они уже соответствуют таблице <span className="code">clients</span>.
+        </p>
         <label>
-          Имя
+          Nájemce jméno a příjmení / Имя и фамилия
           <input
             className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            placeholder="Mykola Roman"
           />
         </label>
         <label>
-          Телефон
+          Adresa nájemce / Адрес
           <input
             className="input"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder="Družstevní 1655, Praha..."
           />
         </label>
-        <button className="btn primary" disabled={!name} onClick={create}>
+        <div className="formgrid">
+          <label>
+            Telefon
+            <input
+              className="input"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+420..."
+            />
+          </label>
+          <label>
+            E-mail
+            <input
+              className="input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email@example.com"
+            />
+          </label>
+        </div>
+        <div className="formgrid">
+          <label>
+            Typ dokladu / Тип документа
+            <select className="input" value={docType} onChange={(e) => setDocType(e.target.value)}>
+              <option value="ID card">Občanský průkaz / ID card</option>
+              <option value="passport">Cestovní pas / Паспорт</option>
+              <option value="driver_license">Řidičský průkaz / Права</option>
+              <option value="visa">Vízum / Pobyt</option>
+              <option value="other">Jiné / Другое</option>
+            </select>
+          </label>
+          <label>
+            Číslo dokladu / Номер документа
+            <input
+              className="input"
+              value={docNumber}
+              onChange={(e) => setDocNumber(e.target.value)}
+              placeholder="001648905"
+            />
+          </label>
+        </div>
+        <label>
+          Poznámka / Комментарий
+          <textarea
+            className="textarea"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="например: документ проверен, залог 1500 Kč..."
+          />
+        </label>
+        <button className="btn primary" disabled={!name.trim()} onClick={create}>
           Создать
         </button>
       </div>
@@ -2276,15 +2453,99 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
   );
 }
 
+function ClientInviteRegistration({ inviteKey, showToast, reload }: { inviteKey: string; showToast: (s: string) => void; reload: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [address, setAddress] = useState("");
+  const [docType, setDocType] = useState("ID card");
+  const [docNumber, setDocNumber] = useState("");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  async function submit() {
+    setError("");
+    if (!name.trim()) {
+      setError("Введи имя и фамилию клиента.");
+      return;
+    }
+    if (!phone.trim()) {
+      setError("Введи телефон клиента.");
+      return;
+    }
+    if (!address.trim()) {
+      setError("Введи адрес клиента как в договоре.");
+      return;
+    }
+    if (!docNumber.trim()) {
+      setError("Введи номер документа клиента.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api<any>("/api/client/register-from-invite", {
+        method: "POST",
+        body: JSON.stringify({ invite_key: inviteKey, name, phone, email, address, doc_type: docType, doc_number: docNumber, notes }),
+      });
+      showToast("Клиентский кабинет привязан");
+      await reload();
+    } catch (e: any) {
+      const message = e?.message || "Не получилось использовать ключ";
+      setError(message);
+      showToast(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <div className="card">
+      <h3>🔑 Вход / регистрация по ключу</h3>
+      <p className="muted">
+        Ключ <span className="code">{inviteKey}</span> принят из ссылки Telegram-бота.
+        Заполни данные, и Mini App привяжет твой Telegram к клиентской карточке.
+      </p>
+      {error && <p className="dangerText">{error}</p>}
+      <p className="muted">
+        Заполни данные как в договоре аренды: имя, адрес, телефон/e-mail и документ.
+      </p>
+      <label>Nájemce jméno a příjmení / Имя и фамилия<input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ivan Petrov" /></label>
+      <label>Adresa nájemce / Адрес<input className="input" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Družstevní 1655, Praha..." /></label>
+      <div className="formgrid">
+        <label>Telefon<input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+420..." /></label>
+        <label>E-mail<input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@example.com" /></label>
+      </div>
+      <div className="formgrid">
+        <label>Typ dokladu / Тип документа
+          <select className="input" value={docType} onChange={(e) => setDocType(e.target.value)}>
+            <option value="ID card">Občanský průkaz / ID card</option>
+            <option value="passport">Cestovní pas / Паспорт</option>
+            <option value="driver_license">Řidičský průkaz / Права</option>
+            <option value="visa">Vízum / Pobyt</option>
+            <option value="other">Jiné / Другое</option>
+          </select>
+        </label>
+        <label>Číslo dokladu / Номер документа<input className="input" value={docNumber} onChange={(e) => setDocNumber(e.target.value)} placeholder="001648905" /></label>
+      </div>
+      <label>Комментарий<textarea className="textarea" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="опционально" /></label>
+      <button className="btn primary" disabled={loading || !name.trim() || !phone.trim() || !address.trim() || !docNumber.trim()} onClick={submit}>{loading ? "Сохраняю..." : "Создать / привязать кабинет"}</button>
+    </div>
+  );
+}
+
 function ClientApp({ showToast }: { showToast: (s: string) => void }) {
   const [data, setData] = useState<ClientPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const inviteKey = useMemo(() => inviteParam(), []);
   async function load() {
     setLoading(true);
     try {
+      setError("");
       setData(await api<ClientPayload>("/api/client/me"));
     } catch (e: any) {
-      showToast(e.message);
+      const message = e?.message || "Клиент не найден";
+      setError(message);
+      showToast(message);
     } finally {
       setLoading(false);
     }
@@ -2294,11 +2555,14 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
   }, []);
   if (loading)
     return <div className="card">Загрузка клиентского кабинета...</div>;
+  if (!data && inviteKey)
+    return <ClientInviteRegistration inviteKey={inviteKey} showToast={showToast} reload={load} />;
   if (!data)
     return (
       <div className="card">
         <h3 className="dangerText">Клиент не найден</h3>
-        <p>Попроси админа выдать ключ привязки или привязать Telegram ID.</p>
+        <p>{error || "Попроси админа выдать ссылку входа или привязать Telegram ID."}</p>
+        <p className="muted">Если у тебя есть ссылка с ключом, открой именно её через Telegram-бота.</p>
       </div>
     );
   const summaryOpen = data.balances.reduce(
@@ -2319,6 +2583,12 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
             {money(summaryOpen)}
           </span>
         </div>
+        <hr className="hr" />
+        <h3>Данные договора</h3>
+        <div className="small muted">📞 {data.client.client_phone || "телефон не заполнен"}</div>
+        <div className="small muted">📧 {data.client.client_email || "email не заполнен"}</div>
+        <div className="small muted">🏠 {data.client.client_address || "адрес не заполнен"}</div>
+        <div className="small muted">🪪 {data.client.client_doc_type || "документ"}: {data.client.client_doc_number || "номер не заполнен"}</div>
       </div>
       <div className="card">
         <h3>Балансы по категориям</h3>
