@@ -123,7 +123,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "menu" | "bikes" | "balances" | "debts" | "requests" | "exceptions" | "clients";
+  "menu" | "bikes" | "health" | "balances" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -144,6 +144,72 @@ type ClientPayload = {
   payment_rules: any[];
   requests: RuleRequest[];
   payments: Payment[];
+};
+
+type BikeHealth = {
+  bike_id: number;
+  bike_label: string;
+  brand?: string | null;
+  model?: string | null;
+  bike_status?: string | null;
+  active_rental_id?: number | null;
+  client_id?: number | null;
+  client_name?: string | null;
+  current_km: number;
+  last_odometer_at?: string | null;
+  last_service_km: number;
+  last_service_date?: string | null;
+  last_service_title?: string | null;
+  km_since_service: number;
+  km_to_service: number;
+  health_status: string;
+  health_status_label: string;
+  open_task_count: number;
+};
+
+type BikeBatteryHealth = {
+  bike_id: number;
+  battery_id: number;
+  brand?: string | null;
+  capacity?: string | null;
+  generation?: string | null;
+  status?: string | null;
+  first_used_at?: string | null;
+  age_days?: number | null;
+  health_status?: string | null;
+  health_notes?: string | null;
+  attached_at?: string | null;
+};
+
+type BikeServiceEvent = {
+  id: number;
+  bike_id: number;
+  event_type: string;
+  title: string;
+  description?: string | null;
+  odometer_km?: number | null;
+  cost?: number | null;
+  performed_at: string;
+};
+
+type BikeMaintenanceTask = {
+  id: number;
+  bike_id: number;
+  task_type: string;
+  status: string;
+  priority: string;
+  current_km?: number | null;
+  due_km?: number | null;
+  title: string;
+  description?: string | null;
+};
+
+type BikeHealthPayload = {
+  bikes: BikeHealth[];
+  batteries: BikeBatteryHealth[];
+  service_events: BikeServiceEvent[];
+  tasks: BikeMaintenanceTask[];
+  odometer_reports?: any[];
 };
 
 const CATEGORIES = [
@@ -432,6 +498,12 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
           🚲 Велики
         </button>
         <button
+          className={`tab ${tab === "health" ? "active" : ""}`}
+          onClick={() => setTab("health")}
+        >
+          🧰 Состояние
+        </button>
+        <button
           className={`tab ${tab === "balances" ? "active" : ""}`}
           onClick={() => setTab("balances")}
         >
@@ -464,6 +536,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       </div>
       {tab === "menu" && <AdminMenuTab setTab={setTab} />}
       {tab === "bikes" && <BikesTab showToast={showToast} />}
+      {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
       {tab === "debts" && <DebtsTab showToast={showToast} />}
       {tab === "requests" && <RuleRequestsTab showToast={showToast} />}
@@ -476,6 +549,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
 function AdminMenuTab({ setTab }: { setTab: (tab: AdminTab) => void }) {
   const migrated = [
     ["🚲 Велики / найти велик", "bikes", "поиск, карточка велика, аренда, батареи, правило оплаты"],
+    ["🧰 Состояние велика / пробег / ТО", "health", "пробег, последние ремонты, батареи, задачи ТО"],
     ["💰 Финансы / оплаты / долги", "balances", "баланс клиента, ручная оплата, начисления"],
     ["⚠️ Должники / долги", "debts", "фильтры, rent_plan, реальные долги, закрытие планов"],
     ["🔑 Ключи / клиенты", "clients", "создание ссылки входа через Telegram-бота"],
@@ -513,6 +587,270 @@ function AdminMenuTab({ setTab }: { setTab: (tab: AdminTab) => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+
+function statusPillClass(status?: string) {
+  if (status === "needs_service") return "danger";
+  if (status === "soon_service" || status === "km_old" || status === "no_km") return "warn";
+  return "ok";
+}
+
+function shortDate(value?: string | null) {
+  if (!value) return "-";
+  return String(value).slice(0, 10);
+}
+
+function roundKm(value: unknown) {
+  return `${Math.round(Number(value || 0))} км`;
+}
+
+function BikeHealthTab({ showToast }: { showToast: (s: string) => void }) {
+  const [payload, setPayload] = useState<BikeHealthPayload>({ bikes: [], batteries: [], service_events: [], tasks: [] });
+  const [q, setQ] = useState("");
+  const [health, setHealth] = useState("all");
+  const [selected, setSelected] = useState<number | null>(null);
+  const [bulkText, setBulkText] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set("q", q.trim());
+      if (health !== "all") params.set("health", health);
+      const data = await api<BikeHealthPayload>(`/api/admin/bike-health?${params.toString()}`);
+      setPayload(data);
+      if (!selected && data.bikes[0]) setSelected(data.bikes[0].bike_id);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch((e) => showToast(e.message));
+  }, [health]);
+
+  async function saveBulk() {
+    const rows = bulkText.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    if (!rows.length) return showToast("Вставь строки вида 24: 1840");
+    const results: string[] = [];
+    for (const row of rows.slice(0, 80)) {
+      const m = row.match(/#?(\d+)\s*[:=\- ]\s*(\d+(?:[.,]\d+)?)/);
+      if (!m) {
+        results.push(`❌ ${row}: не понял`);
+        continue;
+      }
+      const bike_id = Number(m[1]);
+      const odometer_km = Number(m[2].replace(",", "."));
+      try {
+        await api("/api/admin/bike-health/report", {
+          method: "POST",
+          body: JSON.stringify({ bike_id, odometer_km, notes: "bulk admin km form" }),
+        });
+        results.push(`✅ #${bike_id}: ${odometer_km} км`);
+      } catch (e: any) {
+        results.push(`❌ #${bike_id}: ${e.message}`);
+      }
+    }
+    showToast(results.slice(0, 8).join(" · ") + (results.length > 8 ? " ..." : ""));
+    setBulkText("");
+    await load();
+  }
+
+  const selectedBike = payload.bikes.find((b) => b.bike_id === selected) || payload.bikes[0] || null;
+  const serviceEvents = selectedBike ? payload.service_events.filter((e) => e.bike_id === selectedBike.bike_id) : [];
+  const batteries = selectedBike ? payload.batteries.filter((b) => b.bike_id === selectedBike.bike_id) : [];
+  const tasks = selectedBike ? payload.tasks.filter((t) => t.bike_id === selectedBike.bike_id) : [];
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <h3 className="section-title">🧰 Состояние великов</h3>
+        <p className="muted small">Пока это ручной учёт: пробег, ТО, ремонты и батареи. Roapp.io можно будет подключить позже как источник ремонтов.</p>
+        <div className="row">
+          <input className="input" placeholder="Поиск #24, Duotts, Engwe" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load().catch((er) => showToast(er.message))} />
+          <select className="select" value={health} onChange={(e) => setHealth(e.target.value)}>
+            <option value="all">Все состояния</option>
+            <option value="needs_service">Нужно ТО</option>
+            <option value="soon_service">Скоро ТО</option>
+            <option value="km_old">Пробег устарел</option>
+            <option value="no_km">Нет пробега</option>
+            <option value="ok">OK</option>
+          </select>
+          <button className="btn primary" onClick={() => load().catch((e) => showToast(e.message))}>{loading ? "..." : "Обновить"}</button>
+        </div>
+        <hr className="hr" />
+        <div className="list">
+          {payload.bikes.map((b) => (
+            <button key={b.bike_id} className={`item ${selectedBike?.bike_id === b.bike_id ? "active" : ""}`} onClick={() => setSelected(b.bike_id)}>
+              <div className="space"><b>{b.bike_label}</b><span className={`pill ${statusPillClass(b.health_status)}`}>{b.health_status_label}</span></div>
+              <div className="small muted">{b.client_name || "без active клиента"} · {roundKm(b.current_km)} · после ТО {roundKm(b.km_since_service)}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="card">
+          <h3>Массовый ввод пробега</h3>
+          <p className="small muted">Формат: <span className="code">24: 1840</span> или <span className="code">25 920</span>, каждая строка отдельно.</p>
+          <textarea className="textarea" value={bulkText} onChange={(e) => setBulkText(e.target.value)} placeholder={"24: 1840\n25: 920\n31: 3100"} />
+          <button className="btn ok" onClick={saveBulk}>Сохранить пробег по списку</button>
+        </div>
+        {selectedBike ? (
+          <BikeHealthCard
+            bike={selectedBike}
+            batteries={batteries}
+            serviceEvents={serviceEvents}
+            tasks={tasks}
+            reload={load}
+            showToast={showToast}
+          />
+        ) : (
+          <div className="card">Выбери велик слева.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BikeHealthCard({
+  bike,
+  batteries,
+  serviceEvents,
+  tasks,
+  reload,
+  showToast,
+}: {
+  bike: BikeHealth;
+  batteries: BikeBatteryHealth[];
+  serviceEvents: BikeServiceEvent[];
+  tasks: BikeMaintenanceTask[];
+  reload: () => Promise<void>;
+  showToast: (s: string) => void;
+}) {
+  const [km, setKm] = useState(Math.round(Number(bike.current_km || 0)) || "");
+  const [serviceTitle, setServiceTitle] = useState("Простое ТО");
+  const [serviceType, setServiceType] = useState("service");
+  const [serviceCost, setServiceCost] = useState(0);
+  const [serviceDescription, setServiceDescription] = useState("");
+  const [batteryIds, setBatteryIds] = useState("");
+  const [batteryNotes, setBatteryNotes] = useState("");
+
+  useEffect(() => {
+    setKm(Math.round(Number(bike.current_km || 0)) || "");
+    setBatteryIds(batteries.map((b) => b.battery_id).join(", "));
+  }, [bike.bike_id, bike.current_km, batteries.map((b) => b.battery_id).join(",")]);
+
+  async function saveKm() {
+    await api("/api/admin/bike-health/report", {
+      method: "POST",
+      body: JSON.stringify({ bike_id: bike.bike_id, odometer_km: Number(km), notes: "admin bike health card" }),
+    });
+    showToast("Пробег сохранён");
+    await reload();
+  }
+
+  async function saveService() {
+    await api("/api/admin/bike-health/service", {
+      method: "POST",
+      body: JSON.stringify({
+        bike_id: bike.bike_id,
+        odometer_km: Number(km || bike.current_km || 0),
+        title: serviceTitle,
+        event_type: serviceType,
+        cost: serviceCost,
+        description: serviceDescription,
+      }),
+    });
+    showToast("Сервис/ремонт сохранён");
+    setServiceDescription("");
+    await reload();
+  }
+
+  async function linkBatteries() {
+    await api("/api/admin/bike-health/battery", {
+      method: "POST",
+      body: JSON.stringify({
+        bike_id: bike.bike_id,
+        battery_ids: batteryIds,
+        health_status: "unknown",
+        notes: batteryNotes || null,
+      }),
+    });
+    showToast("Батареи привязаны к велику");
+    setBatteryNotes("");
+    await reload();
+  }
+
+  return (
+    <>
+      <div className="card">
+        <div className="space">
+          <h2 className="section-title">{bike.bike_label}</h2>
+          <span className={`pill ${statusPillClass(bike.health_status)}`}>{bike.health_status_label}</span>
+        </div>
+        <div className="kv">
+          <div>Пробег сейчас</div><div><b>{roundKm(bike.current_km)}</b></div>
+          <div>Последний сервис</div><div>{roundKm(bike.last_service_km)} / {shortDate(bike.last_service_date)}</div>
+          <div>После сервиса</div><div>{roundKm(bike.km_since_service)}</div>
+          <div>До ТО осталось</div><div>{roundKm(bike.km_to_service)}</div>
+          <div>Клиент</div><div>{bike.client_name || "-"}</div>
+          <div>Последний пробег</div><div>{shortDate(bike.last_odometer_at)}</div>
+          <div>Открытые задачи</div><div>{tasks.length ? <span className="warnText">{tasks.length}</span> : <span className="okText">нет</span>}</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>✏️ Ручное редактирование</h3>
+        <div className="formgrid">
+          <label>Текущий пробег, км<input className="input" type="number" value={km} onChange={(e) => setKm(e.target.value ? Number(e.target.value) : "")} /></label>
+          <label>Тип события<select className="select" value={serviceType} onChange={(e) => setServiceType(e.target.value)}><option value="service">ТО / сервис</option><option value="repair">Ремонт</option><option value="brakes">Тормоза</option><option value="tire">Колесо / камера</option><option value="battery_replace">Замена батареи</option><option value="other">Другое</option></select></label>
+          <label>Название<input className="input" value={serviceTitle} onChange={(e) => setServiceTitle(e.target.value)} placeholder="Простое ТО / тормоза / камера" /></label>
+          <label>Стоимость<input className="input" type="number" value={serviceCost} onChange={(e) => setServiceCost(Number(e.target.value || 0))} /></label>
+        </div>
+        <textarea className="textarea" value={serviceDescription} onChange={(e) => setServiceDescription(e.target.value)} placeholder="Комментарий: что заменили, что проверить, состояние" />
+        <div className="row">
+          <button className="btn primary" onClick={saveKm}>Сохранить только пробег</button>
+          <button className="btn ok" onClick={saveService}>Записать сервис/ремонт</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>Последние ремонты / сервис</h3>
+        <div className="list">
+          {serviceEvents.length ? serviceEvents.slice(0, 8).map((e) => (
+            <div className="item" key={e.id}>
+              <div className="space"><b>{shortDate(e.performed_at)} · {e.title}</b><span className="pill">{e.event_type}</span></div>
+              <div className="small muted">{e.odometer_km != null ? roundKm(e.odometer_km) : "км не указан"} · {money(e.cost || 0)}</div>
+              {e.description && <div className="small">{e.description}</div>}
+            </div>
+          )) : <p className="muted">Пока нет событий. Можно создать вручную выше.</p>}
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>Батареи</h3>
+        <div className="formgrid">
+          <label>ID батарей<input className="input" value={batteryIds} onChange={(e) => setBatteryIds(e.target.value)} placeholder="1, 2" /></label>
+          <label>Заметка по батареям<input className="input" value={batteryNotes} onChange={(e) => setBatteryNotes(e.target.value)} placeholder="выданы с великом / проверить" /></label>
+        </div>
+        <button className="btn primary" onClick={linkBatteries}>Привязать батареи к этому велику</button>
+        <hr className="hr" />
+        <div className="list">
+          {batteries.length ? batteries.map((b) => (
+            <div className="item" key={b.battery_id}>
+              <div className="space"><b>Батарея #{b.battery_id}</b><span className="pill">{b.status || "unknown"}</span></div>
+              <div className="small muted">{[b.brand, b.capacity, b.generation].filter(Boolean).join(" · ") || "тип не указан"}</div>
+              <div className="small muted">Возраст: {b.age_days ?? 0} дн. · дата выдачи/создания: {shortDate(b.first_used_at)}</div>
+              <div className="small">Состояние: {b.health_status || "unknown"}{b.health_notes ? ` · ${b.health_notes}` : ""}</div>
+            </div>
+          )) : <p className="muted">Батареи пока не привязаны к этому велику.</p>}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -2532,6 +2870,70 @@ function ClientInviteRegistration({ inviteKey, showToast, reload }: { inviteKey:
   );
 }
 
+
+function ClientBikeHealthPanel({ showToast }: { showToast: (s: string) => void }) {
+  const [payload, setPayload] = useState<{ bikes: BikeHealth[]; batteries: BikeBatteryHealth[]; service_events: BikeServiceEvent[] } | null>(null);
+  const [kmByBike, setKmByBike] = useState<Record<number, string>>({});
+  const [notesByBike, setNotesByBike] = useState<Record<number, string>>({});
+
+  async function load() {
+    const data = await api<{ bikes: BikeHealth[]; batteries: BikeBatteryHealth[]; service_events: BikeServiceEvent[] }>("/api/client/bike-health");
+    setPayload(data);
+    const next: Record<number, string> = {};
+    data.bikes.forEach((b) => { next[b.bike_id] = String(Math.round(Number(b.current_km || 0)) || ""); });
+    setKmByBike(next);
+  }
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, []);
+
+  async function submitKm(bikeId: number) {
+    const value = Number(kmByBike[bikeId]);
+    if (!Number.isFinite(value) || value < 0) return showToast("Введи нормальный пробег");
+    await api("/api/client/bike-health", {
+      method: "POST",
+      body: JSON.stringify({ bike_id: bikeId, odometer_km: value, notes: notesByBike[bikeId] || null }),
+    });
+    showToast("Пробег отправлен админу");
+    await load();
+  }
+
+  if (!payload?.bikes?.length) return null;
+  return (
+    <div className="card">
+      <h3>🚲 Состояние моего велика</h3>
+      <p className="small muted">Раз в неделю можно передать пробег. Если после ТО будет около 1000 км, админ увидит задачу на обслуживание.</p>
+      <div className="list">
+        {payload.bikes.map((bike) => {
+          const batteries = payload.batteries.filter((b) => b.bike_id === bike.bike_id);
+          const services = payload.service_events.filter((e) => e.bike_id === bike.bike_id);
+          return (
+            <div className="item" key={bike.bike_id}>
+              <div className="space"><b>{bike.bike_label}</b><span className={`pill ${statusPillClass(bike.health_status)}`}>{bike.health_status_label}</span></div>
+              <div className="kv" style={{ marginTop: 8 }}>
+                <div>Пробег сейчас</div><div>{roundKm(bike.current_km)}</div>
+                <div>Последний сервис</div><div>{roundKm(bike.last_service_km)} / {shortDate(bike.last_service_date)}</div>
+                <div>После сервиса</div><div>{roundKm(bike.km_since_service)}</div>
+                <div>До ТО</div><div>{roundKm(bike.km_to_service)}</div>
+              </div>
+              <hr className="hr" />
+              <div className="formgrid">
+                <label>Пробег на дисплее, км<input className="input" type="number" value={kmByBike[bike.bike_id] || ""} onChange={(e) => setKmByBike((x) => ({ ...x, [bike.bike_id]: e.target.value }))} /></label>
+                <label>Комментарий<input className="input" value={notesByBike[bike.bike_id] || ""} onChange={(e) => setNotesByBike((x) => ({ ...x, [bike.bike_id]: e.target.value }))} placeholder="если что-то шумит / плохо тормозит" /></label>
+              </div>
+              <button className="btn primary" onClick={() => submitKm(bike.bike_id)}>Отправить пробег</button>
+              <hr className="hr" />
+              <div className="small muted">Батареи: {batteries.length ? batteries.map((b) => `#${b.battery_id} ${b.capacity || ""}`).join(", ") : "нет данных"}</div>
+              <div className="small muted">Последний ремонт: {services[0] ? `${shortDate(services[0].performed_at)} · ${services[0].title}` : "нет данных"}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ClientApp({ showToast }: { showToast: (s: string) => void }) {
   const [data, setData] = useState<ClientPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2590,6 +2992,7 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
         <div className="small muted">🏠 {data.client.client_address || "адрес не заполнен"}</div>
         <div className="small muted">🪪 {data.client.client_doc_type || "документ"}: {data.client.client_doc_number || "номер не заполнен"}</div>
       </div>
+      <ClientBikeHealthPanel showToast={showToast} />
       <div className="card">
         <h3>Балансы по категориям</h3>
         <table className="table">
