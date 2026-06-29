@@ -675,12 +675,8 @@ function BikeDebtBlock({
       x.includes(id) ? x.filter((i) => i !== id) : [...x, id],
     );
   }
-  async function closePlan() {
+  async function closePlan(createPayment: boolean) {
     if (!selected.length) return showToast("Ничего не выбрано");
-    if (!confirm(`Закрыть выбранные плановые долги по аренде на ${money(total)}? Реальные долги будут пропущены.`)) return;
-    const createPayment = confirm(
-      `Создать реальные client_payments на дату ${today()} для закрытых планов?\n\nОК = создать оплату.\nОтмена = закрыть только план без оплаты.`,
-    );
     const res = await api<any>("/api/admin/debts/bulk-close-plan", {
       method: "POST",
       body: JSON.stringify({
@@ -764,11 +760,14 @@ function BikeDebtBlock({
         <button className="btn" onClick={() => setSelected([])}>
           Снять все
         </button>
-        <button className="btn ok" onClick={closePlan}>
-          ✅ Закрыть план
+        <button className="btn ok" onClick={() => closePlan(false)}>
+          ✅ Закрыть план без оплаты
+        </button>
+        <button className="btn primary" onClick={() => closePlan(true)}>
+          💵 Закрыть план + создать оплату
         </button>
         <button className="btn primary" onClick={paid}>
-          💵 Реальная оплата
+          💵 Оплата по выбранным долгам
         </button>
         <button className="btn warn" onClick={remind}>
           📢 Напомнить
@@ -778,8 +777,8 @@ function BikeDebtBlock({
         </button>
       </div>
       <p className="small muted">
-        При ручном закрытии плана Mini App спросит, создавать ли реальную оплату.
-        Автоматическая смена правила оплаты оплаты не создаёт.
+        Плановые долги закрываются явным действием: отдельная кнопка без оплаты и отдельная кнопка с созданием client_payments.
+        Автоматическая смена правила оплаты старые оплаты не создаёт.
       </p>
       <hr className="hr" />
       {!debts.length && <p className="muted">Открытых долгов нет.</p>}
@@ -1192,33 +1191,74 @@ function LinkBlock({
 }) {
   const [telegramId, setTelegramId] = useState("");
   const [invite, setInvite] = useState<any>(null);
+  const [inviteError, setInviteError] = useState("");
+  const [inviteLoading, setInviteLoading] = useState(false);
+
+  async function copyText(text: string, label = "Скопировано") {
+    try {
+      await navigator.clipboard?.writeText(text);
+      showToast(label);
+    } catch {
+      window.prompt("Скопируй вручную", text);
+    }
+  }
+
   async function link() {
     if (!active) return showToast("Нет active клиента");
-    await api("/api/admin/link-telegram", {
-      method: "POST",
-      body: JSON.stringify({
-        client_id: active.client_id,
-        telegram_id: Number(telegramId),
-      }),
-    });
-    showToast("Telegram привязан");
-    await reload();
+    try {
+      await api("/api/admin/link-telegram", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: active.client_id,
+          telegram_id: Number(telegramId),
+        }),
+      });
+      showToast("Telegram привязан");
+      await reload();
+    } catch (e: any) {
+      showToast(e.message || "Ошибка привязки Telegram");
+    }
   }
+
   async function createInvite(clientId: number | null) {
-    const data = await api<any>("/api/admin/invites", {
-      method: "POST",
-      body: JSON.stringify({
-        client_id: clientId,
-        notes: clientId ? "link existing client" : "create new client",
-      }),
-    });
-    setInvite(data);
-    await navigator.clipboard?.writeText(data.link).catch(() => null);
-    showToast("Ссылка создана и скопирована");
+    if (!clientId) {
+      setInviteError("Нет active клиента: сначала выбери велик с активной арендой или создай аренду.");
+      return;
+    }
+    setInvite(null);
+    setInviteError("");
+    setInviteLoading(true);
+    try {
+      const data = await api<any>("/api/admin/invites", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          notes: "client entry link from admin miniapp",
+        }),
+      });
+      setInvite(data);
+      await copyText(data.link, "Ссылка создана и скопирована");
+    } catch (e: any) {
+      const message = e.message || "Не получилось создать ключ";
+      setInviteError(message);
+      showToast(message);
+    } finally {
+      setInviteLoading(false);
+    }
   }
+
   return (
     <div className="card">
-      <h3 className="section-title">🔗 Telegram / ключ клиента</h3>
+      <h3 className="section-title">🔗 Telegram / вход клиента</h3>
+      <p className="small muted">
+        Ключ — это ссылка в Telegram-бота для уже существующего клиента. После перехода бот должен обработать <span className="code">/start KEY</span>, привязать Telegram ID и дать кнопку входа в клиентский Mini App.
+      </p>
+      {!active && <p className="dangerText">Нет active-аренды — ссылку входа создать нельзя.</p>}
+      {active && (
+        <p className="small muted">
+          Active клиент: #{active.client_id} {active.client_name || ""}
+        </p>
+      )}
       <div className="formgrid">
         <label>
           Telegram ID
@@ -1239,39 +1279,46 @@ function LinkBlock({
       </div>
       <div className="row" style={{ marginTop: 10 }}>
         <button
-          className="btn"
-          disabled={!active}
+          className="btn primary"
+          disabled={!active || inviteLoading}
           onClick={() => createInvite(active?.client_id || null)}
         >
-          Ключ для active клиента
-        </button>
-        <button className="btn" onClick={() => createInvite(null)}>
-          Ключ для нового клиента
+          {inviteLoading ? "Создаю..." : "🔑 Создать ссылку входа для active клиента"}
         </button>
       </div>
+      {inviteError && <p className="dangerText">{inviteError}</p>}
       {invite && (
-        <div className="item" style={{ marginTop: 10 }}>
+        <div className="item ok" style={{ marginTop: 10 }}>
+          <div className="space">
+            <b>Ссылка создана</b>
+            <span className="pill ok">active</span>
+          </div>
+          <div>
+            Клиент: <span className="code">#{invite.client_id || active?.client_id}</span>
+          </div>
           <div>
             Ключ: <span className="code">{invite.invite_key}</span>
           </div>
-          <div className="small muted">{invite.link}</div>
+          <div className="small muted" style={{ wordBreak: "break-all" }}>{invite.link}</div>
           <div className="row" style={{ marginTop: 8 }}>
-            <button
-              className="btn"
-              onClick={() => navigator.clipboard?.writeText(invite.link)}
-            >
+            <button className="btn" onClick={() => copyText(invite.link, "Ссылка скопирована")}>
               Скопировать ссылку
             </button>
-            <button
-              className="btn"
-              onClick={() => navigator.clipboard?.writeText(invite.invite_key)}
-            >
+            <button className="btn" onClick={() => copyText(invite.invite_key, "Ключ скопирован")}>
               Скопировать ключ
             </button>
-            <a className="btn" href={invite.link}>
-              Открыть
+            <a className="btn" href={invite.link} target="_blank" rel="noreferrer">
+              Открыть https
             </a>
+            {invite.tg_link && (
+              <a className="btn" href={invite.tg_link}>
+                Открыть tg://
+              </a>
+            )}
           </div>
+          <p className="small muted">
+            Если при переходе бот ничего не отвечает — это не ошибка Mini App. Нужно обновить VPS-бот: обработчик <span className="code">/start KEY</span> должен искать ключ в <span className="code">contract_invites</span> и присылать клиентскую кнопку входа.
+          </p>
         </div>
       )}
     </div>
@@ -1488,11 +1535,14 @@ function ManualPaymentBlock({
   const [note, setNote] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   async function submit() {
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n <= 0) return showToast("Введи сумму больше 0");
+    if (mode === "selected" && !selected.length) return showToast("Выбери начисления или поставь режим 'старые долги'");
     await api("/api/admin/payments/manual", {
       method: "POST",
       body: JSON.stringify({
         client_id: clientId,
-        amount: Number(amount),
+        amount: n,
         method,
         payment_date: paymentDate,
         category,
@@ -1810,12 +1860,8 @@ function DebtsTab({ showToast }: { showToast: (s: string) => void }) {
     showToast(msg);
     await load();
   }
-  async function closePlan() {
+  async function closePlan(createPayment: boolean) {
     if (!selected.length) return showToast("Ничего не выбрано");
-    if (!confirm(`Закрыть выбранные плановые долги по аренде на ${money(total)}? Реальные долги будут пропущены.`)) return;
-    const createPayment = confirm(
-      `Создать реальные client_payments на дату ${today()} для закрытых планов?\n\nОК = создать оплату.\nОтмена = закрыть только план без оплаты.`,
-    );
     const res = await api<any>("/api/admin/debts/bulk-close-plan", {
       method: "POST",
       body: JSON.stringify({
@@ -1910,11 +1956,14 @@ function DebtsTab({ showToast }: { showToast: (s: string) => void }) {
           <button className="btn" onClick={() => setSelected([])}>
             Снять все
           </button>
-          <button className="btn ok" onClick={closePlan}>
-            ✅ Закрыть план
+          <button className="btn ok" onClick={() => closePlan(false)}>
+            ✅ Закрыть план без оплаты
+          </button>
+          <button className="btn primary" onClick={() => closePlan(true)}>
+            💵 Закрыть план + создать оплату
           </button>
           <button className="btn primary" onClick={realPaid}>
-            💵 Реальная оплата
+            💵 Оплата по выбранным долгам
           </button>
           <button
             className="btn warn"
@@ -2100,6 +2149,8 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
   const [q, setQ] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [lastInvite, setLastInvite] = useState<any>(null);
+  const [inviteError, setInviteError] = useState("");
   async function load() {
     setClients(
       await api<Client[]>(`/api/admin/clients?q=${encodeURIComponent(q)}`),
@@ -2119,12 +2170,25 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
     await load();
   }
   async function invite(clientId: number) {
-    const data = await api<any>("/api/admin/invites", {
-      method: "POST",
-      body: JSON.stringify({ client_id: clientId }),
-    });
-    await navigator.clipboard?.writeText(data.link).catch(() => null);
-    showToast(`Ключ скопирован: ${data.link}`);
+    setLastInvite(null);
+    setInviteError("");
+    try {
+      const data = await api<any>("/api/admin/invites", {
+        method: "POST",
+        body: JSON.stringify({ client_id: clientId, notes: "client entry link from clients tab" }),
+      });
+      setLastInvite(data);
+      try {
+        await navigator.clipboard?.writeText(data.link);
+        showToast("Ссылка создана и скопирована");
+      } catch {
+        showToast("Ссылка создана, скопируй её из блока справа");
+      }
+    } catch (e: any) {
+      const message = e.message || "Не получилось создать ссылку";
+      setInviteError(message);
+      showToast(message);
+    }
   }
   return (
     <div className="grid">
@@ -2164,13 +2228,29 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
                 style={{ marginTop: 8 }}
                 onClick={() => invite(c.id)}
               >
-                🔑 Ключ привязки
+                🔑 Ссылка входа через бота
               </button>
             </div>
           ))}
         </div>
       </div>
       <div className="card">
+        <h3>Последняя ссылка входа</h3>
+        {inviteError && <p className="dangerText">{inviteError}</p>}
+        {!lastInvite && !inviteError && <p className="muted">Нажми “Ссылка входа через бота” у клиента слева — ссылка появится здесь.</p>}
+        {lastInvite && (
+          <div className="item ok">
+            <div>Клиент: <span className="code">#{lastInvite.client_id}</span></div>
+            <div>Ключ: <span className="code">{lastInvite.invite_key}</span></div>
+            <div className="small muted" style={{ wordBreak: "break-all" }}>{lastInvite.link}</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={() => navigator.clipboard?.writeText(lastInvite.link)}>Скопировать ссылку</button>
+              <a className="btn" href={lastInvite.link} target="_blank" rel="noreferrer">Открыть https</a>
+              {lastInvite.tg_link && <a className="btn" href={lastInvite.tg_link}>Открыть tg://</a>}
+            </div>
+          </div>
+        )}
+        <hr className="hr" />
         <h3>Создать клиента</h3>
         <label>
           Имя
