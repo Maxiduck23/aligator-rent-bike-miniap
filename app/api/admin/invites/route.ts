@@ -11,28 +11,66 @@ function generateInviteKey(length = 10) {
   return key;
 }
 
+function botUsername() {
+  const raw = (process.env.TELEGRAM_BOT_USERNAME || process.env.BOT_USERNAME || 'aligator_bike_bot').trim();
+  return raw.replace(/^@+/, '');
+}
+
+function buildLinks(username: string, inviteKey: string) {
+  const safeKey = encodeURIComponent(inviteKey);
+  return {
+    link: `https://t.me/${username}?start=${safeKey}`,
+    tg_link: `tg://resolve?domain=${username}&start=${safeKey}`
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const auth = requireAdmin(req);
     const body = await req.json().catch(() => ({}));
-    const inviteKey = optionalString(body.invite_key) || generateInviteKey();
+    const requestedKey = optionalString(body.invite_key)?.toUpperCase() || null;
     const clientId = optionalNumber(body.client_id);
 
-    const { data, error } = await supabaseAdmin
-      .from('contract_invites')
-      .insert({
-        invite_key: inviteKey,
-        client_id: clientId,
-        created_by_telegram_id: auth.telegramId,
-        notes: optionalString(body.notes),
-        status: 'active'
-      })
-      .select('*')
-      .single();
-    if (error) throw error;
+    let lastError: any = null;
+    let data: any = null;
+    let inviteKey = requestedKey || generateInviteKey();
 
-    const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'YOUR_BOT_USERNAME';
-    return ok({ ...data, link: `https://t.me/${botUsername}?start=${inviteKey}` }, 201);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (!requestedKey && attempt > 0) inviteKey = generateInviteKey();
+
+      if (!/^[A-Z0-9_-]{4,64}$/.test(inviteKey)) {
+        throw new Error('invite_key может содержать только A-Z, 0-9, _ и -');
+      }
+
+      const res = await supabaseAdmin
+        .from('contract_invites')
+        .insert({
+          invite_key: inviteKey,
+          client_id: clientId,
+          created_by_telegram_id: auth.telegramId,
+          notes: optionalString(body.notes),
+          status: 'active'
+        })
+        .select('*')
+        .single();
+
+      if (!res.error) {
+        data = res.data;
+        lastError = null;
+        break;
+      }
+
+      lastError = res.error;
+      if (requestedKey || res.error.code !== '23505') break;
+    }
+
+    if (lastError) throw lastError;
+    if (!data) throw new Error('Не получилось создать ключ');
+
+    const username = botUsername();
+    if (!username || username === 'YOUR_BOT_USERNAME') throw new Error('TELEGRAM_BOT_USERNAME не настроен в Vercel');
+
+    return ok({ ...data, invite_key: inviteKey, bot_username: username, ...buildLinks(username, inviteKey) }, 201);
   } catch (e) {
     return fail(e);
   }
