@@ -76,3 +76,19 @@ export async function POST(req: NextRequest) {
     return fail(e);
   }
 }
+
+export async function GET(req: NextRequest) {
+  try {
+    requireAdmin(req);
+    const { data, error } = await supabaseAdmin
+      .from('asset_transactions')
+      .select('*')
+      .order('transaction_date', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    return ok({ recent: data || [] });
+  } catch (e) {
+    return fail(e);
+  }
+}

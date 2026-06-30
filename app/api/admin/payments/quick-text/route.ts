@@ -76,7 +76,7 @@ function detectChargeType(line: string): string {
   return "other";
 }
 
-function parsePaymentOrDebtLines(text: string): ParsedLine[] {
+function parsePaymentOrDebtLines(text: string, forceAction?: "payment" | "debt", defaultChargeType = "rent"): ParsedLine[] {
   const rawLines = (text || "")
     .replace(/\u00a0/g, " ")
     .split(/\r?\n|;+/)
@@ -91,8 +91,8 @@ function parsePaymentOrDebtLines(text: string): ParsedLine[] {
     if (!bikeId || !amount) {
       throw new Error(`Не понял строку: "${line}". Примеры: "24 велик 2000 оплата", "+ 2000 долг вел 24", "+ 3000 аренда вел 24"`);
     }
-    const action: "payment" | "debt" = isDebtLine(line) ? "debt" : "payment";
-    const charge_type = action === "debt" ? detectChargeType(line) : "rent";
+    const action: "payment" | "debt" = forceAction || (isDebtLine(line) ? "debt" : "payment");
+    const charge_type = action === "debt" ? (defaultChargeType && defaultChargeType !== "auto" ? defaultChargeType : detectChargeType(line)) : "rent";
     results.push({ line, bike_id: bikeId, amount, action, charge_type });
   }
 
@@ -121,9 +121,12 @@ export async function POST(req: NextRequest) {
     const paymentDate = optionalString(body.payment_date) || new Date().toISOString().slice(0, 10);
     const method = optionalString(body.method) || "manual_chat";
     const note = optionalString(body.note) || "quick payment/debt text";
+    const forceActionRaw = optionalString(body.force_action);
+    const forceAction = forceActionRaw === "payment" || forceActionRaw === "debt" ? forceActionRaw : undefined;
+    const defaultChargeType = optionalString(body.default_charge_type) || "rent";
     if (!text.trim()) throw new Error("text is required");
 
-    const parsed = parsePaymentOrDebtLines(text);
+    const parsed = parsePaymentOrDebtLines(text, forceAction, defaultChargeType);
     const results = [];
 
     for (const item of parsed) {

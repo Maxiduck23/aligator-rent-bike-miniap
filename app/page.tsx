@@ -103,6 +103,21 @@ type RuleRequest = {
   admin_note?: string | null;
   created_at: string;
 };
+
+type ClientRequest = {
+  id: number;
+  client_id: number;
+  telegram_id?: number | null;
+  request_type: string;
+  status: string;
+  title?: string | null;
+  description?: string | null;
+  preferred_date?: string | null;
+  admin_note?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
 type Payment = {
   id: number;
   client_id: number;
@@ -123,7 +138,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "menu" | "bikes" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
+  "bikes" | "assets" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -143,7 +158,9 @@ type ClientPayload = {
   balances: BalanceRow[];
   payment_rules: any[];
   requests: RuleRequest[];
+  general_requests?: ClientRequest[];
   payments: Payment[];
+  finance_stats?: any;
 };
 
 type BikeHealth = {
@@ -497,21 +514,21 @@ export default function Page() {
 }
 
 function AdminApp({ showToast }: { showToast: (s: string) => void }) {
-  const [tab, setTab] = useState<AdminTab>("menu");
+  const [tab, setTab] = useState<AdminTab>("bikes");
   return (
     <>
       <div className="tabs">
-        <button
-          className={`tab ${tab === "menu" ? "active" : ""}`}
-          onClick={() => setTab("menu")}
-        >
-          🧭 Меню
-        </button>
         <button
           className={`tab ${tab === "bikes" ? "active" : ""}`}
           onClick={() => setTab("bikes")}
         >
           🚲 Велики
+        </button>
+        <button
+          className={`tab ${tab === "assets" ? "active" : ""}`}
+          onClick={() => setTab("assets")}
+        >
+          🧾 Активы
         </button>
         <button
           className={`tab ${tab === "health" ? "active" : ""}`}
@@ -556,8 +573,8 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
           👤 Клиенты
         </button>
       </div>
-      {tab === "menu" && <AdminMenuTab setTab={setTab} />}
       {tab === "bikes" && <BikesTab showToast={showToast} />}
+      {tab === "assets" && <AssetsTab showToast={showToast} />}
       {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
       {tab === "finance" && <FinanceLogTab showToast={showToast} />}
@@ -1868,6 +1885,7 @@ function LedgerPanel({
           </div>
         </div>
       </div>
+      <ClientFinanceStatsBlock stats={ledger.finance_stats} />
       <div className="card">
         <h3>Категории</h3>
         <table className="table">
@@ -1940,6 +1958,49 @@ function LedgerPanel({
         </table>
       </div>
     </>
+  );
+}
+
+function ClientFinanceStatsBlock({ stats }: { stats: any }) {
+  if (!stats) return null;
+  const current = stats.current || {};
+  const all = stats.all_time || {};
+  const history = stats.history || [];
+  return (
+    <div className="card">
+      <h3>📊 Статистика клиента</h3>
+      <p className="small muted">Месяц считается по due_date/period_start начислений и payment_date оплат. Долг — обязательство, оплата — реальные деньги.</p>
+      <div className="kpi-grid">
+        <div className="kpi"><div>Начислено за {stats.current_month}</div><b>{money(current.charged)}</b></div>
+        <div className="kpi"><div>Оплачено за месяц</div><b>{money(current.paid)}</b></div>
+        <div className="kpi"><div>Долг месяца</div><b className={Number(current.open_debt) > 0 ? "dangerText" : "okText"}>{money(current.open_debt)}</b></div>
+        <div className="kpi"><div>Баланс месяца</div><b className={Number(current.balance) >= 0 ? "okText" : "dangerText"}>{money(current.balance)}</b></div>
+        <div className="kpi"><div>Начислено всего</div><b>{money(all.charged)}</b></div>
+        <div className="kpi"><div>Оплачено всего</div><b>{money(all.paid)}</b></div>
+        <div className="kpi"><div>Открытый долг всего</div><b className={Number(all.open_debt) > 0 ? "dangerText" : "okText"}>{money(all.open_debt)}</b></div>
+        <div className="kpi"><div>Баланс всего</div><b className={Number(all.balance) >= 0 ? "okText" : "dangerText"}>{money(all.balance)}</b></div>
+      </div>
+      <hr className="hr" />
+      <h4>История по месяцам</h4>
+      <div className="tableWrap">
+        <table className="table">
+          <thead><tr><th>Месяц</th><th>Начислено</th><th>Оплачено</th><th>Долг</th><th>Аванс</th><th>Баланс</th></tr></thead>
+          <tbody>
+            {history.map((r: any) => (
+              <tr key={r.month}>
+                <td>{r.month}</td>
+                <td>{money(r.charged)}</td>
+                <td>{money(r.paid)}</td>
+                <td className={Number(r.open_debt) > 0 ? "dangerText" : ""}>{money(r.open_debt)}</td>
+                <td className="okText">{money(r.advance)}</td>
+                <td className={Number(r.balance) >= 0 ? "okText" : "dangerText"}>{money(r.balance)}</td>
+              </tr>
+            ))}
+            {!history.length && <tr><td colSpan={6} className="muted">Истории пока нет.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -2172,10 +2233,12 @@ function QuickPaymentBlock({
   showToast: (s: string) => void;
   reload: () => Promise<void>;
 }) {
+  const [mode, setMode] = useState<"payment" | "debt">("payment");
   const [text, setText] = useState("");
   const [paymentDate, setPaymentDate] = useState(today());
   const [method, setMethod] = useState("manual_chat");
-  const [note, setNote] = useState("quick payment from miniapp");
+  const [debtCategory, setDebtCategory] = useState("rent");
+  const [note, setNote] = useState("quick from miniapp");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
@@ -2184,21 +2247,28 @@ function QuickPaymentBlock({
     setError("");
     setLastResult(null);
     if (!text.trim()) {
-      setError("Вставь хотя бы одну строку оплаты.");
+      setError(mode === "payment" ? "Вставь хотя бы одну строку оплаты." : "Вставь хотя бы одну строку долга.");
       return;
     }
     setLoading(true);
     try {
       const res = await api<any>("/api/admin/payments/quick-text", {
         method: "POST",
-        body: JSON.stringify({ text, payment_date: paymentDate, method, note }),
+        body: JSON.stringify({
+          text,
+          payment_date: paymentDate,
+          method,
+          note,
+          force_action: mode,
+          default_charge_type: debtCategory,
+        }),
       });
       setLastResult(res);
-      showToast(`Быстрый ввод: обработано ${res.parsed_count || 0} строк`);
+      showToast(`${mode === "payment" ? "Оплаты" : "Долги"}: обработано ${res.parsed_count || 0} строк`);
       setText("");
       await reload();
     } catch (e: any) {
-      const message = e?.message || "Быстрый ввод оплат не сработал";
+      const message = e?.message || "Быстрый ввод не сработал";
       setError(message);
       showToast(message);
     } finally {
@@ -2208,55 +2278,57 @@ function QuickPaymentBlock({
 
   return (
     <div className="card">
-      <h3>⚡ Быстрый ввод оплат / долгов</h3>
+      <h3>⚡ Быстрый ввод</h3>
       <p className="small muted">
-        Формат по строкам: <span className="code">24 велик 2000 оплата</span>, <span className="code">+ 2000 долг вел 24</span>, <span className="code">+ 1500 долг сервис вел 8</span>.
-        Обычная сумма создаёт реальные <span className="code">client_payments</span> и закрывает старые rent-долги. Если есть слово <span className="code">долг/должен/торчит</span> — создаётся <span className="code">client_charges</span>, а не оплата.
+        Теперь режим выбирается явно. <b>Оплата</b> создаёт только <span className="code">client_payments</span>.
+        <b> Долг</b> создаёт только <span className="code">client_charges</span>. Система больше не угадывает по слову “долг”.
       </p>
-      <div className="formgrid">
+      <div className="row">
+        <button className={`btn ${mode === "payment" ? "primary" : ""}`} onClick={() => setMode("payment")}>🟢 Записать оплату</button>
+        <button className={`btn ${mode === "debt" ? "danger" : ""}`} onClick={() => setMode("debt")}>🔴 Добавить долг</button>
+      </div>
+      <div className="formgrid" style={{ marginTop: 10 }}>
         <label>
-          Дата оплаты
-          <input
-            className="input"
-            type="date"
-            value={paymentDate}
-            onChange={(e) => setPaymentDate(e.target.value)}
-          />
+          Дата
+          <input className="input" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
         </label>
-        <label>
-          Метод
-          <select
-            className="select"
-            value={method}
-            onChange={(e) => setMethod(e.target.value)}
-          >
-            <option value="manual_chat">manual_chat</option>
-            <option value="cash">cash</option>
-            <option value="bank">bank</option>
-            <option value="revolut">revolut</option>
-            <option value="other">other</option>
-          </select>
-        </label>
+        {mode === "payment" ? (
+          <label>
+            Метод
+            <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
+              <option value="manual_chat">manual_chat</option>
+              <option value="cash">cash</option>
+              <option value="bank">bank</option>
+              <option value="revolut">revolut</option>
+              <option value="other">other</option>
+            </select>
+          </label>
+        ) : (
+          <label>
+            Категория долга
+            <select className="select" value={debtCategory} onChange={(e) => setDebtCategory(e.target.value)}>
+              {CATEGORIES.filter(([v]) => v !== "auto").map(([v, t]) => (
+                <option key={v} value={v}>{t}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
       <label>
-        Строки оплат / долгов
+        {mode === "payment" ? "Строки оплат" : "Строки долгов"}
         <textarea
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"24 велик 2000 оплата\n+ 2000 долг вел 24\n+ 1500 долг сервис вел 8"}
+          placeholder={mode === "payment" ? "вел 37 3000 Паша\n8 1500 Ахмед" : "вел 37 3000 Паша\nвел 8 1500 Ахмед"}
         />
       </label>
       <label>
         Заметка
-        <input
-          className="input"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
+        <input className="input" value={note} onChange={(e) => setNote(e.target.value)} />
       </label>
-      <button className="btn primary" disabled={!text.trim() || loading} onClick={submit}>
-        {loading ? "Записываю..." : "Записать"}
+      <button className={`btn ${mode === "payment" ? "primary" : "danger"}`} disabled={!text.trim() || loading} onClick={submit}>
+        {loading ? "Записываю..." : mode === "payment" ? "Записать оплаты" : "Добавить долги"}
       </button>
       {error && (
         <div className="item critical" style={{ marginTop: 10 }}>
@@ -2282,6 +2354,55 @@ function QuickPaymentBlock({
 }
 
 
+function AssetsTab({ showToast }: { showToast: (s: string) => void }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  async function load() {
+    setLoading(true);
+    try {
+      setData(await api<any>("/api/admin/assets"));
+    } catch (e: any) {
+      showToast(e.message || "Не удалось загрузить активы");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    load().catch((e) => showToast(e.message));
+  }, []);
+  const rows = data?.recent || data?.transactions || [];
+  return (
+    <div className="grid">
+      <AssetOperationsBlock showToast={showToast} reload={load} />
+      <div className="card wide">
+        <div className="space">
+          <h3>📜 История активов</h3>
+          <button className="btn" onClick={() => load()} disabled={loading}>{loading ? "Загрузка..." : "Обновить"}</button>
+        </div>
+        <p className="muted">Покупка велика/батареи — это расход и asset transaction. Продажа помечает актив как sold и фиксирует сделку.</p>
+        <div className="tableWrap">
+          <table className="table">
+            <thead>
+              <tr><th>Дата</th><th>Актив</th><th>Операция</th><th>Сумма</th><th>Заметка</th></tr>
+            </thead>
+            <tbody>
+              {rows.map((r: any) => (
+                <tr key={r.id}>
+                  <td>{r.transaction_date || r.created_at?.slice?.(0, 10) || "-"}</td>
+                  <td>{r.asset_type} #{r.asset_id}</td>
+                  <td>{r.transaction_type}</td>
+                  <td>{money(r.amount)}</td>
+                  <td className="small">{r.notes || "-"}</td>
+                </tr>
+              ))}
+              {!rows.length && <tr><td colSpan={5} className="muted">Записей пока нет.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AssetOperationsBlock({ showToast, reload }: { showToast: (s: string) => void; reload: () => Promise<void> }) {
   const [assetType, setAssetType] = useState("bike");
@@ -2456,12 +2577,11 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
     load().catch((e) => showToast(e.message));
   }, []);
 
-  const totals = data?.totals || { income: 0, expense: 0, count: 0 };
+  const totals = data?.totals || { income: 0, expense: 0, debt_created: 0, count: 0 };
   const profit = Number(totals.income || 0) - Number(totals.expense || 0);
 
   return (
     <div className="grid">
-      <AssetOperationsBlock showToast={showToast} reload={() => load()} />
       <div className="card">
         <h3>📊 Стата из быстрых сообщений бота</h3>
         <p className="muted">
@@ -2487,9 +2607,10 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
         </div>
         <hr className="hr" />
         <div className="kpi-grid">
-          <div className="kpi"><div>Доход</div><b>{money(totals.income)}</b></div>
-          <div className="kpi"><div>Расход</div><b>{money(totals.expense)}</b></div>
-          <div className="kpi"><div>Итог</div><b>{money(profit)}</b></div>
+          <div className="kpi"><div>Реальный доход</div><b>{money(totals.income)}</b></div>
+          <div className="kpi"><div>Реальный расход</div><b>{money(totals.expense)}</b></div>
+          <div className="kpi"><div>Денежный итог</div><b>{money(profit)}</b></div>
+          <div className="kpi"><div>Создано долгов</div><b>{money(totals.debt_created)}</b></div>
           <div className="kpi"><div>Записей</div><b>{totals.count || 0}</b></div>
         </div>
       </div>
@@ -2500,7 +2621,7 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
           {(data?.by_category || []).map((r: any, idx: number) => (
             <div className="item" key={`${r.sign}-${r.category}-${idx}`}>
               <div className="space">
-                <b>{r.sign === "income" ? "🟢 +" : "🔴 -"} {r.category_label || r.category}</b>
+                <b>{r.kind === "debt_created" ? "📌 долг" : r.sign === "income" ? "🟢 +" : "🔴 -"} {r.category_label || r.category}</b>
                 <span className="pill">{r.count}</span>
               </div>
               <div>{money(r.total)}</div>
@@ -2529,7 +2650,7 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
               {(data?.recent || []).map((r: any) => (
                 <tr key={r.id}>
                   <td>{r.event_date || "-"}</td>
-                  <td>{r.sign === "income" ? "🟢 +" : "🔴 -"}</td>
+                  <td>{r.stats_kind === "debt_created" ? "📌 долг" : r.sign === "income" ? "🟢 +" : "🔴 -"}</td>
                   <td>{money(r.amount)}</td>
                   <td>{r.category_label || r.category}</td>
                   <td>{r.bike_id ? `#${r.bike_id}` : "-"}</td>
@@ -2747,95 +2868,104 @@ function DebtsTab({ showToast }: { showToast: (s: string) => void }) {
 
 function RuleRequestsTab({ showToast }: { showToast: (s: string) => void }) {
   const [rows, setRows] = useState<RuleRequest[]>([]);
-  const [status, setStatus] = useState("pending");
+  const [clientRows, setClientRows] = useState<any[]>([]);
+  const [status, setStatus] = useState("new");
   async function load() {
-    setRows(
-      await api<RuleRequest[]>(
-        `/api/admin/payment-rule-requests?status=${status}`,
-      ),
-    );
+    const ruleStatus = status === "new" ? "pending" : status;
+    const [ruleData, generalData] = await Promise.all([
+      api<RuleRequest[]>(`/api/admin/payment-rule-requests?status=${ruleStatus}`),
+      api<any[]>(`/api/admin/requests?status=${status}`),
+    ]);
+    setRows(ruleData);
+    setClientRows(generalData);
   }
   useEffect(() => {
     load().catch((e) => showToast(e.message));
   }, [status]);
   async function decide(id: number, decision: "approve" | "reject") {
-    const note = prompt(
-      decision === "approve" ? "Комментарий к подтверждению" : "Причина отказа",
-      "",
-    );
+    const note = prompt(decision === "approve" ? "Комментарий к подтверждению" : "Причина отказа", "");
     await api("/api/admin/payment-rule-requests", {
       method: "POST",
       body: JSON.stringify({ request_id: id, decision, admin_note: note }),
     });
-    showToast(
-      decision === "approve" ? "Запрос подтверждён" : "Запрос отклонён",
-    );
+    showToast(decision === "approve" ? "Запрос подтверждён" : "Запрос отклонён");
+    await load();
+  }
+  async function setGeneralStatus(id: number, next: string) {
+    const note = prompt("Комментарий админа", "");
+    await api("/api/admin/requests", {
+      method: "POST",
+      body: JSON.stringify({ request_id: id, status: next, admin_note: note }),
+    });
+    showToast("Статус запроса обновлён");
     await load();
   }
   return (
-    <div className="card">
-      <div className="space">
-        <h3>📝 Запросы клиентов на изменение правила оплаты</h3>
-        <select
-          className="select"
-          style={{ maxWidth: 180 }}
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-        >
-          <option value="pending">pending</option>
-          <option value="all">all</option>
-          <option value="approved">approved</option>
-          <option value="rejected">rejected</option>
-        </select>
-      </div>
-      <p className="muted">
-        Клиент может только отправить запрос. Новое правило вступает в силу
-        только после подтверждения админом. Старые начисления и оплаты не
-        удаляются.
-      </p>
-      <div className="list">
-        {rows.map((r) => (
-          <div className="item" key={r.id}>
-            <div className="space">
-              <b>
-                Запрос #{r.id}: client #{r.client_id}, bike #{r.bike_id}
-              </b>
-              <span
-                className={`pill ${r.status === "pending" ? "warn" : r.status === "approved" ? "ok" : "danger"}`}
-              >
-                {r.status}
-              </span>
-            </div>
-            <div className="small muted">
-              rental #{r.rental_id} · {new Date(r.created_at).toLocaleString()}
-            </div>
-            <p>
-              Новая сумма: <b>{money(r.requested_monthly_amount)}</b>
-            </p>
-            <p className="small">Части: {JSON.stringify(r.requested_parts)}</p>
-            <p>{r.reason || "Без причины"}</p>
-            {r.status === "pending" && (
-              <div className="row">
-                <button
-                  className="btn ok"
-                  onClick={() => decide(r.id, "approve")}
-                >
-                  ✅ Подтвердить
-                </button>
-                <button
-                  className="btn danger"
-                  onClick={() => decide(r.id, "reject")}
-                >
-                  ❌ Отклонить
-                </button>
+    <div className="grid">
+      <div className="card wide">
+        <div className="space">
+          <h3>📝 Запросы клиентов</h3>
+          <select className="select" style={{ maxWidth: 180 }} value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="new">new</option>
+            <option value="all">all</option>
+            <option value="in_progress">in_progress</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+            <option value="closed">closed</option>
+          </select>
+        </div>
+        <p className="muted">Общие заявки клиента: аренда, доп. батарея, ремонт, возврат, аксессуар. Пока это только заявка и статус, без автоматического создания аренды.</p>
+        <div className="list">
+          {clientRows.map((r: any) => (
+            <div className="item" key={r.id}>
+              <div className="space">
+                <b>#{r.id} {r.title || r.request_type}</b>
+                <span className={`pill ${r.status === "new" ? "warn" : r.status === "approved" || r.status === "closed" ? "ok" : r.status === "rejected" ? "danger" : ""}`}>{r.status}</span>
               </div>
-            )}
-          </div>
-        ))}
+              <div className="small muted">client #{r.client_id} {r.clients?.name ? `· ${r.clients.name}` : ""} · {new Date(r.created_at).toLocaleString()}</div>
+              {r.preferred_date && <div className="small muted">Желаемая дата: {r.preferred_date}</div>}
+              <p>{r.description}</p>
+              {r.admin_note && <p className="small muted">Админ: {r.admin_note}</p>}
+              <div className="row">
+                <button className="btn" onClick={() => setGeneralStatus(r.id, "in_progress")}>В работу</button>
+                <button className="btn ok" onClick={() => setGeneralStatus(r.id, "approved")}>Одобрить</button>
+                <button className="btn danger" onClick={() => setGeneralStatus(r.id, "rejected")}>Отклонить</button>
+                <button className="btn" onClick={() => setGeneralStatus(r.id, "closed")}>Закрыть</button>
+              </div>
+            </div>
+          ))}
+          {!clientRows.length && <p className="muted">Общих запросов пока нет.</p>}
+        </div>
+      </div>
+      <div className="card wide">
+        <h3>💰 Запросы на изменение правила оплаты</h3>
+        <p className="muted">Старый тип запроса оставлен отдельно: клиент просит изменить сумму/части оплаты, подтверждает только админ.</p>
+        <div className="list">
+          {rows.map((r) => (
+            <div className="item" key={r.id}>
+              <div className="space">
+                <b>Запрос #{r.id}: client #{r.client_id}, bike #{r.bike_id}</b>
+                <span className={`pill ${r.status === "pending" ? "warn" : r.status === "approved" ? "ok" : "danger"}`}>{r.status}</span>
+              </div>
+              <div className="small muted">rental #{r.rental_id} · {new Date(r.created_at).toLocaleString()}</div>
+              <p>Новая сумма: <b>{money(r.requested_monthly_amount)}</b></p>
+              <p className="small">Части: {JSON.stringify(r.requested_parts)}</p>
+              <p>{r.reason || "Без причины"}</p>
+              {r.status === "pending" && (
+                <div className="row">
+                  <button className="btn ok" onClick={() => decide(r.id, "approve")}>✅ Подтвердить</button>
+                  <button className="btn danger" onClick={() => decide(r.id, "reject")}>❌ Отклонить</button>
+                </div>
+              )}
+            </div>
+          ))}
+          {!rows.length && <p className="muted">Запросов оплаты нет.</p>}
+        </div>
       </div>
     </div>
   );
 }
+
 
 function ExceptionsTab() {
   const [rows, setRows] = useState<ExceptionRow[]>([]);
@@ -3273,6 +3403,14 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
           </span>
         </div>
         <hr className="hr" />
+        {data.finance_stats && (
+          <div className="kv">
+            <div>Начислено всего</div><div>{money(data.finance_stats.charged_total)}</div>
+            <div>Оплачено всего</div><div>{money(data.finance_stats.payments_total)}</div>
+            <div>Баланс всего</div><div className={Number(data.finance_stats.net_balance) >= 0 ? "okText" : "dangerText"}>{money(data.finance_stats.net_balance)}</div>
+          </div>
+        )}
+        <hr className="hr" />
         <h3>Данные договора</h3>
         <div className="small muted">📞 {data.client.client_phone || "телефон не заполнен"}</div>
         <div className="small muted">📧 {data.client.client_email || "email не заполнен"}</div>
@@ -3305,6 +3443,7 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
           </tbody>
         </table>
       </div>
+      <ClientGeneralRequestBlock showToast={showToast} reload={load} />
       <ClientRuleRequestBlock data={data} showToast={showToast} reload={load} />
       <div className="card">
         <h3>Открытые долги</h3>
@@ -3359,24 +3498,78 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
       <div className="card">
         <h3>Мои запросы</h3>
         <div className="list">
-          {data.requests.map((r) => (
-            <div className="item" key={r.id}>
-              <div className="space">
-                <b>Запрос #{r.id}</b>
-                <span
-                  className={`pill ${r.status === "pending" ? "warn" : r.status === "approved" ? "ok" : "danger"}`}
-                >
-                  {r.status}
-                </span>
-              </div>
-              <p>
-                {money(r.requested_monthly_amount)} · {r.reason}
-              </p>
+          {(data.general_requests || []).map((r: ClientRequest) => (
+            <div className="item" key={`general-${r.id}`}>
+              <div className="space"><b>{r.title || r.request_type} #{r.id}</b><span className="pill warn">{r.status}</span></div>
+              <p>{r.description}</p>
+              {r.preferred_date && <p className="small muted">Желаемая дата: {r.preferred_date}</p>}
             </div>
           ))}
+          {data.requests.map((r) => (
+            <div className="item" key={`pay-${r.id}`}>
+              <div className="space">
+                <b>Изменение оплаты #{r.id}</b>
+                <span className={`pill ${r.status === "pending" ? "warn" : r.status === "approved" ? "ok" : "danger"}`}>{r.status}</span>
+              </div>
+              <p>{money(r.requested_monthly_amount)} · {r.reason}</p>
+            </div>
+          ))}
+          {!(data.general_requests || []).length && !data.requests.length && <p className="muted">Запросов пока нет.</p>}
         </div>
       </div>
     </>
+  );
+}
+
+function ClientGeneralRequestBlock({ showToast, reload }: { showToast: (s: string) => void; reload: () => Promise<void> }) {
+  const [requestType, setRequestType] = useState("battery_request");
+  const [preferredDate, setPreferredDate] = useState("");
+  const [description, setDescription] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit() {
+    if (!description.trim()) return showToast("Опиши запрос");
+    setLoading(true);
+    try {
+      await api("/api/client/requests", {
+        method: "POST",
+        body: JSON.stringify({ request_type: requestType, preferred_date: preferredDate || null, description }),
+      });
+      showToast("Запрос отправлен админу");
+      setDescription("");
+      setPreferredDate("");
+      await reload();
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <div className="card">
+      <h3>➕ Создать запрос</h3>
+      <p className="small muted">Пока это заявка без автоматического создания аренды/ремонта. Админ увидит её во вкладке 📝 Запросы.</p>
+      <div className="formgrid">
+        <label>
+          Тип
+          <select className="select" value={requestType} onChange={(e) => setRequestType(e.target.value)}>
+            <option value="rent_request">🚲 Хочу арендовать велик</option>
+            <option value="battery_request">🔋 Нужна доп. батарея</option>
+            <option value="repair_request">🛠 Нужен ремонт</option>
+            <option value="payment_rule_request">💰 Хочу изменить оплату</option>
+            <option value="return_request">🔁 Хочу вернуть велик</option>
+            <option value="accessory_request">📦 Нужен аксессуар / зарядка</option>
+            <option value="other_request">❓ Другое</option>
+          </select>
+        </label>
+        <label>
+          Желаемая дата
+          <input className="input" type="date" value={preferredDate} onChange={(e) => setPreferredDate(e.target.value)} />
+        </label>
+      </div>
+      <label>
+        Комментарий
+        <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="например: нужна доп. батарея на следующую неделю" />
+      </label>
+      <button className="btn primary" disabled={loading || !description.trim()} onClick={submit}>{loading ? "Отправляю..." : "Отправить запрос"}</button>
+    </div>
   );
 }
 
