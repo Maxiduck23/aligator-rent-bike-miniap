@@ -2208,10 +2208,10 @@ function QuickPaymentBlock({
 
   return (
     <div className="card">
-      <h3>⚡ Быстрый ввод реальных оплат</h3>
+      <h3>⚡ Быстрый ввод оплат / долгов</h3>
       <p className="small muted">
-        Формат по строкам: <span className="code">24 велик 2000 оплата</span>, <span className="code">25 5к</span>, <span className="code">вел 31 2500</span>.
-        Это создаёт реальные <span className="code">client_payments</span> и закрывает старые rent-долги active аренды по этому велику. Если долгов нет — сумма остаётся авансом.
+        Формат по строкам: <span className="code">24 велик 2000 оплата</span>, <span className="code">+ 2000 долг вел 24</span>, <span className="code">+ 1500 долг сервис вел 8</span>.
+        Обычная сумма создаёт реальные <span className="code">client_payments</span> и закрывает старые rent-долги. Если есть слово <span className="code">долг/должен/торчит</span> — создаётся <span className="code">client_charges</span>, а не оплата.
       </p>
       <div className="formgrid">
         <label>
@@ -2239,12 +2239,12 @@ function QuickPaymentBlock({
         </label>
       </div>
       <label>
-        Строки оплат
+        Строки оплат / долгов
         <textarea
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"24 велик 2000 оплата\n25 5к\nвел 31 2500"}
+          placeholder={"24 велик 2000 оплата\n+ 2000 долг вел 24\n+ 1500 долг сервис вел 8"}
         />
       </label>
       <label>
@@ -2256,7 +2256,7 @@ function QuickPaymentBlock({
         />
       </label>
       <button className="btn primary" disabled={!text.trim() || loading} onClick={submit}>
-        {loading ? "Записываю..." : "Записать оплаты"}
+        {loading ? "Записываю..." : "Записать"}
       </button>
       {error && (
         <div className="item critical" style={{ marginTop: 10 }}>
@@ -2267,12 +2267,12 @@ function QuickPaymentBlock({
       {lastResult && (
         <div className="item ok" style={{ marginTop: 10 }}>
           <div className="space">
-            <b>Оплаты записаны</b>
+            <b>Строки обработаны</b>
             <span className="pill ok">{lastResult.parsed_count || 0} строк</span>
           </div>
           {(lastResult.results || []).map((r: any, idx: number) => (
             <div key={idx} className="small muted" style={{ marginTop: 6 }}>
-              #{r.bike_id}: {money(r.amount)} · payment #{r.result?.payment_id || "?"} · закрыто {money(r.result?.allocated_amount || 0)} · аванс {money(r.result?.advance_amount || 0)}
+              #{r.bike_id}: {r.action === "debt" ? "долг" : "оплата"} · {money(r.amount)} · {r.action === "debt" ? `charge #${r.result?.id || "?"}` : `payment #${r.result?.payment_id || "?"}`} · {r.action === "payment" ? `закрыто ${money(r.result?.allocated_amount || 0)} · аванс ${money(r.result?.advance_amount || 0)}` : r.charge_type}
             </div>
           ))}
         </div>
