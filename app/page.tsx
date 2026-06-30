@@ -2272,7 +2272,7 @@ function QuickPaymentBlock({
           </div>
           {(lastResult.results || []).map((r: any, idx: number) => (
             <div key={idx} className="small muted" style={{ marginTop: 6 }}>
-              #{r.bike_id}: {r.action === "debt" ? "долг" : "оплата"} · {money(r.amount)} · {r.action === "debt" ? `charge #${r.result?.id || "?"}` : `payment #${r.result?.payment_id || "?"}`} · {r.action === "payment" ? `закрыто ${money(r.result?.allocated_amount || 0)} · аванс ${money(r.result?.advance_amount || 0)}` : r.charge_type}
+              #{r.bike_id}: {r.action === "debt" ? "долг" : "оплата"} · {money(r.amount)} · {r.action === "debt" ? `charge #${r.result?.charge_id || r.result?.id || "?"}` : `payment #${r.result?.payment_id || "?"}`} · {r.action === "payment" ? `закрыто ${money(r.result?.allocated_amount || 0)} · аванс ${money(r.result?.advance_amount || 0)}` : r.charge_type}
             </div>
           ))}
         </div>
@@ -2281,6 +2281,159 @@ function QuickPaymentBlock({
   );
 }
 
+
+
+function AssetOperationsBlock({ showToast, reload }: { showToast: (s: string) => void; reload: () => Promise<void> }) {
+  const [assetType, setAssetType] = useState("bike");
+  const [action, setAction] = useState("purchase");
+  const [date, setDate] = useState(today());
+  const [bikeId, setBikeId] = useState("");
+  const [batteryId, setBatteryId] = useState("");
+  const [typeId, setTypeId] = useState("");
+  const [brand, setBrand] = useState("");
+  const [model, setModel] = useState("");
+  const [vin, setVin] = useState("");
+  const [amount, setAmount] = useState("");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [last, setLast] = useState<any>(null);
+
+  async function submit() {
+    setError("");
+    setLast(null);
+    setLoading(true);
+    try {
+      const body: any = {
+        asset_type: assetType,
+        action,
+        date,
+        amount: Number(amount),
+        notes,
+      };
+      if (assetType === "bike") {
+        body.bike_id = Number(bikeId);
+        if (action === "purchase") {
+          body.brand = brand;
+          body.model = model;
+          body.vin = vin;
+        }
+      } else {
+        body.battery_id = batteryId ? Number(batteryId) : null;
+        if (action === "purchase") {
+          body.type_id = Number(typeId);
+          body.bike_id = bikeId ? Number(bikeId) : null;
+        }
+      }
+      const res = await api<any>("/api/admin/assets", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setLast(res);
+      showToast(action === "purchase" ? "Покупка записана" : "Продажа записана");
+      await reload();
+    } catch (e: any) {
+      const msg = e?.message || "Операция с активом не сработала";
+      setError(msg);
+      showToast(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="card wide">
+      <h3>🧾 Покупка / продажа великов и батарей</h3>
+      <p className="small muted">
+        Покупка велика/батареи создаёт запись актива и расход в <span className="code">business_expenses</span>.
+        Продажа фиксируется в <span className="code">asset_transactions</span> и помечает актив как sold.
+      </p>
+      <div className="formgrid">
+        <label>
+          Актив
+          <select className="select" value={assetType} onChange={(e) => setAssetType(e.target.value)}>
+            <option value="bike">Велик</option>
+            <option value="battery">Батарея</option>
+          </select>
+        </label>
+        <label>
+          Операция
+          <select className="select" value={action} onChange={(e) => setAction(e.target.value)}>
+            <option value="purchase">Покупка / расход</option>
+            <option value="sale">Продажа</option>
+          </select>
+        </label>
+        <label>
+          Дата
+          <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </label>
+        <label>
+          Сумма Kč
+          <input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="например 30000" />
+        </label>
+      </div>
+      <div className="formgrid">
+        {assetType === "bike" && (
+          <>
+            <label>
+              № велика
+              <input className="input" value={bikeId} onChange={(e) => setBikeId(e.target.value)} placeholder="например 93" />
+            </label>
+            {action === "purchase" && (
+              <>
+                <label>
+                  Бренд
+                  <input className="input" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Duotts / Engwe" />
+                </label>
+                <label>
+                  Модель
+                  <input className="input" value={model} onChange={(e) => setModel(e.target.value)} placeholder="C29 / M20" />
+                </label>
+                <label>
+                  VIN / серийник
+                  <input className="input" value={vin} onChange={(e) => setVin(e.target.value)} />
+                </label>
+              </>
+            )}
+          </>
+        )}
+        {assetType === "battery" && (
+          <>
+            <label>
+              ID батареи {action === "purchase" ? "(можно пусто)" : ""}
+              <input className="input" value={batteryId} onChange={(e) => setBatteryId(e.target.value)} placeholder="например 120" />
+            </label>
+            {action === "purchase" && (
+              <>
+                <label>
+                  type_id батареи
+                  <input className="input" value={typeId} onChange={(e) => setTypeId(e.target.value)} placeholder="например 2" />
+                </label>
+                <label>
+                  Привязать к велику №
+                  <input className="input" value={bikeId} onChange={(e) => setBikeId(e.target.value)} placeholder="необязательно" />
+                </label>
+              </>
+            )}
+          </>
+        )}
+      </div>
+      <label>
+        Заметка
+        <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="поставщик, причина, детали" />
+      </label>
+      <button className="btn primary" disabled={loading || !amount} onClick={submit}>
+        {loading ? "Записываю..." : "Записать актив"}
+      </button>
+      {error && <p className="dangerText">{error}</p>}
+      {last && <p className="small okText">OK: {JSON.stringify(last)}</p>}
+      <hr className="hr" />
+      <p className="small muted">
+        Категории расходов для будущей статистики: <span className="code">bike_purchase</span>, <span className="code">battery_purchase</span>, <span className="code">transport</span>, <span className="code">parts</span>, <span className="code">components</span>, <span className="code">repair_parts</span>, <span className="code">procurement</span>.
+      </p>
+    </div>
+  );
+}
 
 function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
   const [days, setDays] = useState(1);
@@ -2308,6 +2461,7 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
 
   return (
     <div className="grid">
+      <AssetOperationsBlock showToast={showToast} reload={() => load()} />
       <div className="card">
         <h3>📊 Стата из быстрых сообщений бота</h3>
         <p className="muted">

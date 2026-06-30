@@ -63,7 +63,8 @@ function detectAmount(line: string): number | null {
 
 function isDebtLine(line: string): boolean {
   const n = norm(line);
-  return /\b(долг|долги|должен|должна|торчит|dluh)\b/iu.test(n);
+  // В JS \b плохо работает с кириллицей, поэтому без word-boundary.
+  return /(долг|долги|должен|должна|должны|торчит|торчу|dluh)/iu.test(n);
 }
 
 function detectChargeType(line: string): string {
