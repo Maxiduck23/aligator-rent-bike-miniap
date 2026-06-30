@@ -4,8 +4,25 @@ export function ok(data: unknown = null, status = 200) {
   return NextResponse.json({ ok: true, data }, { status });
 }
 
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const anyError = error as any;
+    const parts = [anyError.message, anyError.details, anyError.hint, anyError.code]
+      .filter(Boolean)
+      .map(String);
+    if (parts.length) return parts.join(' | ');
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
+}
+
 export function fail(error: unknown, status = 400) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorToMessage(error);
   const normalized = message === 'Admin only' ? 403 : status;
   return NextResponse.json({ ok: false, error: message }, { status: normalized });
 }

@@ -123,7 +123,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "menu" | "bikes" | "health" | "balances" | "debts" | "requests" | "exceptions" | "clients";
+  "menu" | "bikes" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -244,6 +244,22 @@ function telegramStatus(): string {
   return "Telegram OK";
 }
 
+function apiErrorToText(value: any): string {
+  if (!value) return "API error";
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  if (typeof value === "object") {
+    const parts = [value.message, value.details, value.hint, value.code].filter(Boolean).map(String);
+    if (parts.length) return parts.join(" | ");
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return Object.prototype.toString.call(value);
+    }
+  }
+  return String(value);
+}
+
 async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -253,8 +269,8 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
       ...(options.headers || {}),
     },
   });
-  const json = await res.json();
-  if (!res.ok || !json.ok) throw new Error(json.error || "API error");
+  const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+  if (!res.ok || !json.ok) throw new Error(apiErrorToText(json.error || json));
   return json.data as T;
 }
 
@@ -510,6 +526,12 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
           💰 Балансы
         </button>
         <button
+          className={`tab ${tab === "finance" ? "active" : ""}`}
+          onClick={() => setTab("finance")}
+        >
+          📊 Стата
+        </button>
+        <button
           className={`tab ${tab === "debts" ? "active" : ""}`}
           onClick={() => setTab("debts")}
         >
@@ -538,6 +560,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       {tab === "bikes" && <BikesTab showToast={showToast} />}
       {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
+      {tab === "finance" && <FinanceLogTab showToast={showToast} />}
       {tab === "debts" && <DebtsTab showToast={showToast} />}
       {tab === "requests" && <RuleRequestsTab showToast={showToast} />}
       {tab === "exceptions" && <ExceptionsTab />}
@@ -2254,6 +2277,116 @@ function QuickPaymentBlock({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
+  const [days, setDays] = useState(1);
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function load(nextDays = days) {
+    setLoading(true);
+    try {
+      const payload = await api<any>(`/api/admin/bot-finance?days=${nextDays}`);
+      setData(payload);
+    } catch (e: any) {
+      showToast(e.message || "Не получилось загрузить стату");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch((e) => showToast(e.message));
+  }, []);
+
+  const totals = data?.totals || { income: 0, expense: 0, count: 0 };
+  const profit = Number(totals.income || 0) - Number(totals.expense || 0);
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <h3>📊 Стата из быстрых сообщений бота</h3>
+        <p className="muted">
+          Сюда попадают сообщения формата <span className="code">+ 50 сервис тест</span>, <span className="code">- 500 еда</span>, <span className="code">+ 3000 аренда вел 24</span>.
+          Аренда с номером велика дополнительно создаёт оплату клиента, сервис пока только пишется в журнал.
+        </p>
+        <div className="row">
+          {[1, 7, 30].map((d) => (
+            <button
+              key={d}
+              className={`btn ${days === d ? "primary" : ""}`}
+              onClick={() => {
+                setDays(d);
+                load(d);
+              }}
+            >
+              {d === 1 ? "Сегодня" : `${d} дней`}
+            </button>
+          ))}
+          <button className="btn" onClick={() => load()} disabled={loading}>
+            {loading ? "Загрузка..." : "Обновить"}
+          </button>
+        </div>
+        <hr className="hr" />
+        <div className="kpi-grid">
+          <div className="kpi"><div>Доход</div><b>{money(totals.income)}</b></div>
+          <div className="kpi"><div>Расход</div><b>{money(totals.expense)}</b></div>
+          <div className="kpi"><div>Итог</div><b>{money(profit)}</b></div>
+          <div className="kpi"><div>Записей</div><b>{totals.count || 0}</b></div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>По категориям</h3>
+        <div className="list">
+          {(data?.by_category || []).map((r: any, idx: number) => (
+            <div className="item" key={`${r.sign}-${r.category}-${idx}`}>
+              <div className="space">
+                <b>{r.sign === "income" ? "🟢 +" : "🔴 -"} {r.category_label || r.category}</b>
+                <span className="pill">{r.count}</span>
+              </div>
+              <div>{money(r.total)}</div>
+            </div>
+          ))}
+          {data && !data.by_category?.length && <p className="muted">Пока записей нет.</p>}
+        </div>
+      </div>
+
+      <div className="card wide">
+        <h3>Последние записи</h3>
+        <div className="tableWrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Тип</th>
+                <th>Сумма</th>
+                <th>Категория</th>
+                <th>Велик</th>
+                <th>Клиент</th>
+                <th>Текст</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data?.recent || []).map((r: any) => (
+                <tr key={r.id}>
+                  <td>{r.event_date || "-"}</td>
+                  <td>{r.sign === "income" ? "🟢 +" : "🔴 -"}</td>
+                  <td>{money(r.amount)}</td>
+                  <td>{r.category_label || r.category}</td>
+                  <td>{r.bike_id ? `#${r.bike_id}` : "-"}</td>
+                  <td>{r.client_id ? `#${r.client_id}` : "-"}</td>
+                  <td className="small">{r.line_text || r.raw_text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
