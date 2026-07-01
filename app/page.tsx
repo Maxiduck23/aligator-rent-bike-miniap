@@ -3239,6 +3239,28 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
       showToast(message);
     }
   }
+
+  async function inviteNewClient() {
+    setLastInvite(null);
+    setInviteError("");
+    try {
+      const data = await api<any>("/api/admin/invites", {
+        method: "POST",
+        body: JSON.stringify({ client_id: null, notes: "new client self-registration link from clients tab" }),
+      });
+      setLastInvite(data);
+      try {
+        await navigator.clipboard?.writeText(data.link);
+        showToast("Ссылка для нового клиента создана и скопирована");
+      } catch {
+        showToast("Ссылка создана, скопируй её из блока справа");
+      }
+    } catch (e: any) {
+      const message = e.message || "Не получилось создать ссылку для нового клиента";
+      setInviteError(message);
+      showToast(message);
+    }
+  }
   return (
     <div className="grid">
       <div className="card">
@@ -3290,12 +3312,24 @@ function ClientsTab({ showToast }: { showToast: (s: string) => void }) {
         </div>
       </div>
       <div className="card">
-        <h3>Последняя ссылка входа</h3>
+        <div className="space">
+          <h3>Последняя ссылка входа</h3>
+          <button className="btn primary" onClick={inviteNewClient}>🔑 Ссылка для нового клиента</button>
+        </div>
+        <p className="small muted">
+          Для старого клиента нажимай кнопку у клиента слева. Для нового клиента создай общий ключ здесь: он сам откроет ссылку, заполнит форму договора и Mini App создаст карточку клиента.
+        </p>
         {inviteError && <p className="dangerText">{inviteError}</p>}
-        {!lastInvite && !inviteError && <p className="muted">Нажми “Ссылка входа через бота” у клиента слева — ссылка появится здесь.</p>}
+        {!lastInvite && !inviteError && <p className="muted">Нажми “Ссылка входа через бота” у клиента слева или “Ссылка для нового клиента” сверху — ссылка появится здесь.</p>}
         {lastInvite && (
           <div className="item ok">
-            <div>Клиент: <span className="code">#{lastInvite.client_id}</span></div>
+            <div>
+              {lastInvite.client_id ? (
+                <>Клиент: <span className="code">#{lastInvite.client_id}</span></>
+              ) : (
+                <><span className="pill warn">новый клиент</span> клиент заполнит форму сам</>
+              )}
+            </div>
             <div>Ключ: <span className="code">{lastInvite.invite_key}</span></div>
             <div className="small muted" style={{ wordBreak: "break-all" }}>{lastInvite.link}</div>
             <div className="row" style={{ marginTop: 8 }}>
