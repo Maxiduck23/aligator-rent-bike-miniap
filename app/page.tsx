@@ -485,10 +485,7 @@ export default function Page() {
       <div className="header">
         <div>
           <div className="title">🚲 Aligator Rent CRM</div>
-          <div className="sub">
-            Админка + клиентский кабинет. Бот только показывает быстрые данные,
-            все вводы идут через Mini App.
-          </div>
+
         </div>
         <div className="badge" title={tgStatus}>
           {tgStatus === "Telegram OK" ? "TG OK" : "TG ?"} ·{" "}
@@ -1777,6 +1774,11 @@ function BalancesTab({ showToast }: { showToast: (s: string) => void }) {
     setSelected(id);
     setLedger(await api<any>(`/api/admin/clients/${id}/ledger`));
   }
+  async function allocateAllAdvances() {
+    const res = await api<any>("/api/admin/clients/allocate-advance-all", { method: "POST" });
+    showToast(`Авансы пересчитаны: ${money(res?.allocated_amount || 0)} / клиентов ${res?.clients_count || 0}`);
+    if (selected) await loadLedger(selected);
+  }
   useEffect(() => {
     loadClients().catch((e) => showToast(e.message));
   }, []);
@@ -1800,6 +1802,9 @@ function BalancesTab({ showToast }: { showToast: (s: string) => void }) {
             onClick={() => loadClients().catch((e) => showToast(e.message))}
           >
             Найти
+          </button>
+          <button className="btn primary" onClick={() => allocateAllAdvances().catch((e) => showToast(e.message))}>
+            🔁 Пересчитать авансы всем
           </button>
         </div>
         <hr className="hr" />
@@ -1860,6 +1865,23 @@ function LedgerPanel({
   reload: () => Promise<void>;
 }) {
   const summary = ledger.summary || {};
+  const [allocating, setAllocating] = useState(false);
+  async function allocateAdvance() {
+    if (!ledger.client?.id) return;
+    setAllocating(true);
+    try {
+      const res = await api<any>(`/api/admin/clients/${ledger.client.id}/allocate-advance`, {
+        method: "POST",
+        body: JSON.stringify({ category: "auto" }),
+      });
+      showToast(`Аванс распределён: ${money(res?.allocated_amount || 0)}`);
+      await reload();
+    } catch (e: any) {
+      showToast(e.message || "Не удалось распределить аванс");
+    } finally {
+      setAllocating(false);
+    }
+  }
   return (
     <>
       <div className="card">
@@ -1884,6 +1906,15 @@ function LedgerPanel({
             {money(summary.net_balance)}
           </div>
         </div>
+        {Number(summary.unallocated_advance || 0) > 0 && Number(summary.open_debt_total || 0) > 0 && (
+          <div className="notice" style={{ marginTop: 12 }}>
+            <b>Есть аванс и открытый долг одновременно.</b>
+            <div className="small muted">Нажми кнопку, чтобы связать старые оплаты с открытыми начислениями и обнулить долг/аванс где возможно.</div>
+            <button className="btn primary" onClick={allocateAdvance} disabled={allocating}>
+              {allocating ? "Распределяю..." : "🔁 Списать долг авансом"}
+            </button>
+          </div>
+        )}
       </div>
       <ClientFinanceStatsBlock stats={ledger.finance_stats} />
       <div className="card">
@@ -2236,16 +2267,21 @@ function QuickPaymentBlock({
   const [mode, setMode] = useState<"payment" | "debt">("payment");
   const [text, setText] = useState("");
   const [paymentDate, setPaymentDate] = useState(today());
+  const [dueDate, setDueDate] = useState(today());
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
   const [method, setMethod] = useState("manual_chat");
   const [debtCategory, setDebtCategory] = useState("rent");
   const [note, setNote] = useState("quick from miniapp");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<any>(null);
 
-  async function submit() {
+  async function submit(forceDuplicate = false) {
     setError("");
     setLastResult(null);
+    if (forceDuplicate) setDuplicateWarning(null);
     if (!text.trim()) {
       setError(mode === "payment" ? "Вставь хотя бы одну строку оплаты." : "Вставь хотя бы одну строку долга.");
       return;
@@ -2257,13 +2293,23 @@ function QuickPaymentBlock({
         body: JSON.stringify({
           text,
           payment_date: paymentDate,
+          due_date: dueDate,
+          period_start: periodStart || null,
+          period_end: periodEnd || null,
           method,
           note,
           force_action: mode,
           default_charge_type: debtCategory,
+          confirm_duplicate: forceDuplicate,
         }),
       });
+      if (res?.duplicate_warning) {
+        setDuplicateWarning(res);
+        showToast("Возможный дубль — подтверди сохранение");
+        return;
+      }
       setLastResult(res);
+      setDuplicateWarning(null);
       showToast(`${mode === "payment" ? "Оплаты" : "Долги"}: обработано ${res.parsed_count || 0} строк`);
       setText("");
       await reload();
@@ -2289,9 +2335,15 @@ function QuickPaymentBlock({
       </div>
       <div className="formgrid" style={{ marginTop: 10 }}>
         <label>
-          Дата
+          {mode === "payment" ? "Дата оплаты" : "Дата начисления"}
           <input className="input" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
         </label>
+        {mode === "debt" && (
+          <label>
+            Срок оплаты / due date
+            <input className="input" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </label>
+        )}
         {mode === "payment" ? (
           <label>
             Метод
@@ -2313,6 +2365,18 @@ function QuickPaymentBlock({
             </select>
           </label>
         )}
+        {mode === "debt" && (
+          <>
+            <label>
+              Период с
+              <input className="input" type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+            </label>
+            <label>
+              Период до
+              <input className="input" type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+            </label>
+          </>
+        )}
       </div>
       <label>
         {mode === "payment" ? "Строки оплат" : "Строки долгов"}
@@ -2327,13 +2391,24 @@ function QuickPaymentBlock({
         Заметка
         <input className="input" value={note} onChange={(e) => setNote(e.target.value)} />
       </label>
-      <button className={`btn ${mode === "payment" ? "primary" : "danger"}`} disabled={!text.trim() || loading} onClick={submit}>
+      <button className={`btn ${mode === "payment" ? "primary" : "danger"}`} disabled={!text.trim() || loading} onClick={() => submit(false)}>
         {loading ? "Записываю..." : mode === "payment" ? "Записать оплаты" : "Добавить долги"}
       </button>
       {error && (
         <div className="item critical" style={{ marginTop: 10 }}>
           <b>Ошибка быстрого ввода</b>
           <p className="dangerText">{error}</p>
+        </div>
+      )}
+      {duplicateWarning && (
+        <div className="item warn" style={{ marginTop: 10 }}>
+          <b>⚠️ Возможный дубль</b>
+          <p className="small muted">Похожая запись уже есть за последние 2 дня. Проверь, не добавляешь ли повторно.</p>
+          <pre className="small">{JSON.stringify(duplicateWarning.duplicates || [], null, 2)}</pre>
+          <div className="row">
+            <button className="btn danger" onClick={() => setDuplicateWarning(null)}>Отмена</button>
+            <button className="btn primary" onClick={() => submit(true)}>Добавить всё равно</button>
+          </div>
         </div>
       )}
       {lastResult && (
@@ -2666,6 +2741,109 @@ function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
   );
 }
 
+
+function BusinessDebtsBlock({ showToast }: { showToast: (s: string) => void }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [status, setStatus] = useState("open");
+  const [form, setForm] = useState({
+    counterparty_name: "",
+    direction: "receivable",
+    amount: "",
+    category: "other",
+    due_date: today(),
+    notes: "",
+  });
+
+  async function load() {
+    setRows(await api<any[]>(`/api/admin/business-debts?status=${status}`));
+  }
+  useEffect(() => {
+    load().catch((e) => showToast(e.message));
+  }, [status]);
+
+  async function create() {
+    if (!form.counterparty_name.trim() || !Number(form.amount)) return showToast("Заполни кто и сумму");
+    await api("/api/admin/business-debts", { method: "POST", body: JSON.stringify(form) });
+    showToast("Сторонний долг добавлен");
+    setForm({ counterparty_name: "", direction: "receivable", amount: "", category: "other", due_date: today(), notes: "" });
+    await load();
+  }
+
+  async function setRowStatus(id: number, next: string) {
+    await api("/api/admin/business-debts", { method: "POST", body: JSON.stringify({ action: "status", id, status: next }) });
+    showToast("Статус обновлён");
+    await load();
+  }
+
+  const receivable = rows.filter((r) => r.direction === "receivable" && r.status === "open").reduce((s, r) => s + Number(r.amount || 0), 0);
+  const payable = rows.filter((r) => r.direction === "payable" && r.status === "open").reduce((s, r) => s + Number(r.amount || 0), 0);
+
+  return (
+    <div className="card">
+      <div className="space">
+        <h3>🏢 Сторонние долги бизнеса</h3>
+        <span className="pill">нам {money(receivable)} / мы {money(payable)}</span>
+      </div>
+      <p className="small muted">Это не клиентские долги. Здесь партнёры, поставщики, гости и взаимосвязанные бизнесы.</p>
+      <div className="formgrid">
+        <label>Кто / название
+          <input className="input" value={form.counterparty_name} onChange={(e) => setForm({ ...form, counterparty_name: e.target.value })} placeholder="Влад / Wolt / поставщик" />
+        </label>
+        <label>Направление
+          <select className="select" value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })}>
+            <option value="receivable">Нам должны</option>
+            <option value="payable">Мы должны</option>
+          </select>
+        </label>
+        <label>Сумма
+          <input className="input" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="9000" />
+        </label>
+        <label>Категория
+          <select className="select" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+            <option value="service">сервис</option>
+            <option value="parts">запчасти</option>
+            <option value="referral">рефералка</option>
+            <option value="transport">транспорт</option>
+            <option value="procurement">закупки</option>
+            <option value="other">другое</option>
+          </select>
+        </label>
+        <label>Срок оплаты
+          <input className="input" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+        </label>
+        <label>Комментарий
+          <input className="input" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="за что долг" />
+        </label>
+      </div>
+      <button className="btn primary" onClick={create}>Добавить сторонний долг</button>
+      <hr className="hr" />
+      <div className="row">
+        <select className="select" style={{ maxWidth: 180 }} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="open">open</option>
+          <option value="paid">paid</option>
+          <option value="cancelled">cancelled</option>
+          <option value="all">all</option>
+        </select>
+        <button className="btn" onClick={() => load().catch((e) => showToast(e.message))}>Обновить</button>
+      </div>
+      <div className="list">
+        {rows.map((r) => (
+          <div className={`item ${r.direction === "receivable" ? "ok" : "warn"}`} key={r.id}>
+            <div className="space">
+              <b>#{r.id} {r.counterparty_name}</b>
+              <span className="money">{r.direction === "receivable" ? "+" : "-"} {money(r.amount)}</span>
+            </div>
+            <div className="small muted">{r.category} · due {r.due_date || "-"} · {r.status}</div>
+            {r.notes && <p>{r.notes}</p>}
+            {r.status === "open" && <div className="row"><button className="btn ok" onClick={() => setRowStatus(r.id, "paid")}>Закрыть как paid</button><button className="btn danger" onClick={() => setRowStatus(r.id, "cancelled")}>Отменить</button></div>}
+          </div>
+        ))}
+        {!rows.length && <p className="muted">Сторонних долгов нет.</p>}
+      </div>
+    </div>
+  );
+}
+
 function DebtsTab({ showToast }: { showToast: (s: string) => void }) {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
@@ -2754,6 +2932,7 @@ function DebtsTab({ showToast }: { showToast: (s: string) => void }) {
   return (
     <>
       <QuickPaymentBlock showToast={showToast} reload={load} />
+      <BusinessDebtsBlock showToast={showToast} />
       <div className="card">
         <div className="space">
           <h3>⚠️ Все долги</h3>

@@ -1152,6 +1152,105 @@ SELECT * FROM cats
 UNION ALL
 SELECT * FROM adv;
 
+
+-- PATCH 0.391: auto-allocation of existing advance to newly created/open charges.
+CREATE OR REPLACE FUNCTION miniapp_allocate_client_advance(
+  p_client_id int,
+  p_admin_tg_id bigint DEFAULT NULL,
+  p_charge_category text DEFAULT 'auto'
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_charge record;
+  v_payment record;
+  v_alloc numeric;
+  v_total_allocated numeric := 0;
+  v_allocations int := 0;
+  v_charge_ids bigint[] := ARRAY[]::bigint[];
+  v_payment_ids bigint[] := ARRAY[]::bigint[];
+  v_category text := lower(coalesce(nullif(trim(p_charge_category), ''), 'auto'));
+BEGIN
+  IF p_client_id IS NULL THEN
+    RAISE EXCEPTION 'client_id is required';
+  END IF;
+
+  FOR v_charge IN
+    SELECT ch.*
+    FROM client_charges ch
+    WHERE ch.client_id = p_client_id
+      AND NOT EXISTS (SELECT 1 FROM miniapp_debt_exclusions ex WHERE ex.charge_id = ch.id)
+      AND coalesce(ch.amount, 0) > coalesce(ch.paid_amount, 0)
+      AND coalesce(ch.status, 'due') IN ('due','partial','unpaid','overdue','open','pending')
+      AND (v_category IN ('auto','all','') OR miniapp_charge_category(ch.charge_type) = v_category)
+    ORDER BY coalesce(ch.due_date, ch.created_at::date), ch.id
+    FOR UPDATE
+  LOOP
+    FOR v_payment IN
+      SELECT
+        p.id,
+        p.amount,
+        coalesce(p.payment_date, p.created_at::date) AS payment_date,
+        (coalesce(p.amount, 0) - coalesce((SELECT sum(a.amount) FROM miniapp_payment_allocations a WHERE a.payment_id = p.id), 0))::numeric AS available
+      FROM client_payments p
+      WHERE p.client_id = p_client_id
+        AND coalesce(p.amount, 0) > 0
+        AND (coalesce(p.amount, 0) - coalesce((SELECT sum(a.amount) FROM miniapp_payment_allocations a WHERE a.payment_id = p.id), 0)) > 0
+      ORDER BY coalesce(p.payment_date, p.created_at::date), p.id
+      FOR UPDATE OF p
+    LOOP
+      EXIT WHEN coalesce(v_charge.amount, 0) <= coalesce(v_charge.paid_amount, 0);
+      v_alloc := least(v_payment.available, coalesce(v_charge.amount, 0) - coalesce(v_charge.paid_amount, 0));
+      IF v_alloc <= 0 THEN
+        CONTINUE;
+      END IF;
+
+      INSERT INTO miniapp_payment_allocations (payment_id, charge_id, amount, created_by_telegram_id)
+      VALUES (v_payment.id, v_charge.id, v_alloc, p_admin_tg_id)
+      ON CONFLICT (payment_id, charge_id) DO UPDATE
+        SET amount = miniapp_payment_allocations.amount + excluded.amount;
+
+      UPDATE client_charges
+      SET paid_amount = coalesce(paid_amount, 0) + v_alloc,
+          status = CASE WHEN coalesce(paid_amount, 0) + v_alloc >= amount THEN 'paid' ELSE 'partial' END,
+          paid_at = CASE WHEN coalesce(paid_amount, 0) + v_alloc >= amount THEN now() ELSE paid_at END,
+          updated_at = now(),
+          notes = trim(both E'\n' from concat_ws(E'\n', notes, '[auto_advance_allocation] payment #' || v_payment.id::text || ' allocated ' || v_alloc::text))
+      WHERE id = v_charge.id;
+
+      v_charge.paid_amount := coalesce(v_charge.paid_amount, 0) + v_alloc;
+      v_total_allocated := v_total_allocated + v_alloc;
+      v_allocations := v_allocations + 1;
+      v_charge_ids := array_append(v_charge_ids, v_charge.id);
+      v_payment_ids := array_append(v_payment_ids, v_payment.id);
+    END LOOP;
+  END LOOP;
+
+  PERFORM miniapp_audit(
+    p_admin_tg_id,
+    'miniapp_allocate_client_advance',
+    jsonb_build_object(
+      'client_id', p_client_id,
+      'charge_category', v_category,
+      'allocated_amount', v_total_allocated,
+      'allocations_count', v_allocations,
+      'charge_ids', v_charge_ids,
+      'payment_ids', v_payment_ids
+    )
+  );
+
+  RETURN jsonb_build_object(
+    'client_id', p_client_id,
+    'allocated_amount', v_total_allocated,
+    'allocations_count', v_allocations,
+    'charge_ids', v_charge_ids,
+    'payment_ids', v_payment_ids
+  );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION miniapp_create_manual_charge(
   p_client_id int,
   p_rental_id int DEFAULT NULL,
@@ -1187,6 +1286,15 @@ BEGIN
   RETURNING id INTO v_id;
 
   PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_create_manual_charge', jsonb_build_object('charge_id', v_id, 'client_id', p_client_id, 'charge_type', p_charge_type, 'amount', p_amount));
+
+  -- If the client already has an advance/unallocated payment, immediately apply it to this new charge.
+  IF p_amount > 0 THEN
+    RETURN jsonb_build_object(
+      'charge_id', v_id,
+      'allocation', miniapp_allocate_client_advance(p_client_id, p_admin_tg_id, 'auto')
+    );
+  END IF;
+
   RETURN jsonb_build_object('charge_id', v_id);
 END;
 $$;
@@ -1263,6 +1371,9 @@ BEGIN
       v_allocated_ids := array_append(v_allocated_ids, v_charge.id);
     END LOOP;
   END IF;
+
+  -- A payment can create an advance. Try to allocate any remaining advance to open client charges.
+  PERFORM miniapp_allocate_client_advance(p_client_id, p_admin_tg_id, v_category);
 
   PERFORM miniapp_audit(
     p_admin_tg_id,
@@ -1482,6 +1593,9 @@ BEGIN
     v_allocated := v_allocated + v_alloc;
     v_allocated_ids := array_append(v_allocated_ids, v_charge.id);
   END LOOP;
+
+  -- If this payment has an unallocated remainder, allocate it against any other open client charges.
+  PERFORM miniapp_allocate_client_advance(v_rental.client_id, p_admin_tg_id, 'auto');
 
   PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_record_bike_payment', jsonb_build_object('bike_id', p_bike_id, 'payment_id', v_payment_id, 'amount', p_amount, 'allocated', v_allocated, 'advance', v_remaining));
   RETURN jsonb_build_object('bike_id', p_bike_id, 'client_id', v_rental.client_id, 'rental_id', v_rental.id, 'payment_id', v_payment_id, 'amount', p_amount, 'allocated_amount', v_allocated, 'advance_amount', v_remaining, 'allocated_charge_ids', v_allocated_ids);
@@ -2345,3 +2459,54 @@ CREATE TABLE IF NOT EXISTS client_requests (
 
 CREATE INDEX IF NOT EXISTS idx_client_requests_client ON client_requests(client_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_client_requests_status ON client_requests(status, created_at DESC);
+
+-- PATCH 0.392: allocate advances for all clients and track non-client business debts.
+CREATE OR REPLACE FUNCTION miniapp_allocate_all_advances(
+  p_admin_tg_id bigint DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_client record;
+  v_result jsonb;
+  v_total numeric := 0;
+  v_clients int := 0;
+BEGIN
+  FOR v_client IN
+    SELECT DISTINCT client_id
+    FROM (
+      SELECT client_id FROM client_payments WHERE client_id IS NOT NULL
+      UNION
+      SELECT client_id FROM client_charges WHERE client_id IS NOT NULL
+    ) x
+  LOOP
+    v_result := miniapp_allocate_client_advance(v_client.client_id, p_admin_tg_id, 'auto');
+    IF COALESCE((v_result->>'allocated_amount')::numeric, 0) > 0 THEN
+      v_total := v_total + (v_result->>'allocated_amount')::numeric;
+      v_clients := v_clients + 1;
+    END IF;
+  END LOOP;
+
+  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_allocate_all_advances', jsonb_build_object('allocated_amount', v_total, 'clients_count', v_clients));
+  RETURN jsonb_build_object('allocated_amount', v_total, 'clients_count', v_clients);
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS business_debts (
+  id bigserial PRIMARY KEY,
+  counterparty_name text NOT NULL,
+  direction text NOT NULL DEFAULT 'receivable' CHECK (direction IN ('receivable','payable')),
+  amount numeric(12,2) NOT NULL CHECK (amount > 0),
+  currency text NOT NULL DEFAULT 'CZK',
+  category text NOT NULL DEFAULT 'other',
+  due_date date,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','paid','partial','cancelled','ignored')),
+  notes text,
+  created_by_telegram_id bigint,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_business_debts_status_due ON business_debts(status, due_date);
+CREATE INDEX IF NOT EXISTS idx_business_debts_counterparty ON business_debts(counterparty_name);

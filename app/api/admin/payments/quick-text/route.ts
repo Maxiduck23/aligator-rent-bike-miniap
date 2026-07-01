@@ -113,12 +113,47 @@ async function findActiveRental(bikeId: number) {
   return data;
 }
 
+async function findDuplicate(item: ParsedLine, rental: any, dateValue: string) {
+  const start = new Date(dateValue || new Date().toISOString().slice(0, 10));
+  if (Number.isNaN(start.getTime())) return null;
+  start.setDate(start.getDate() - 2);
+  const startDate = start.toISOString().slice(0, 10);
+  if (item.action === "payment") {
+    const { data, error } = await supabaseAdmin
+      .from("client_payments")
+      .select("id, amount, payment_date, client_id, rental_id, notes")
+      .eq("client_id", Number(rental.client_id))
+      .eq("amount", item.amount)
+      .gte("payment_date", startDate)
+      .order("id", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    return data?.[0] ? { table: "client_payments", ...data[0] } : null;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("client_charges")
+    .select("id, amount, due_date, client_id, rental_id, bike_id, charge_type, notes")
+    .eq("client_id", Number(rental.client_id))
+    .eq("bike_id", item.bike_id)
+    .eq("amount", item.amount)
+    .eq("charge_type", item.charge_type)
+    .gte("due_date", startDate)
+    .order("id", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ? { table: "client_charges", ...data[0] } : null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const auth = requireAdmin(req);
     const body = await req.json();
     const text = optionalString(body.text) || "";
     const paymentDate = optionalString(body.payment_date) || new Date().toISOString().slice(0, 10);
+    const dueDate = optionalString(body.due_date) || paymentDate;
+    const periodStart = optionalString(body.period_start);
+    const periodEnd = optionalString(body.period_end);
+    const confirmDuplicate = Boolean(body.confirm_duplicate);
     const method = optionalString(body.method) || "manual_chat";
     const note = optionalString(body.note) || "quick payment/debt text";
     const forceActionRaw = optionalString(body.force_action);
@@ -128,6 +163,19 @@ export async function POST(req: NextRequest) {
 
     const parsed = parsePaymentOrDebtLines(text, forceAction, defaultChargeType);
     const results = [];
+
+    if (!confirmDuplicate) {
+      const duplicates = [];
+      for (const item of parsed) {
+        const rental = await findActiveRental(item.bike_id);
+        if (!rental?.client_id) continue;
+        const dup = await findDuplicate(item, rental, item.action === "debt" ? dueDate : paymentDate);
+        if (dup) duplicates.push({ line: item.line, bike_id: item.bike_id, amount: item.amount, action: item.action, duplicate: dup });
+      }
+      if (duplicates.length) {
+        return ok({ duplicate_warning: true, duplicates, parsed_count: 0, results: [] });
+      }
+    }
 
     for (const item of parsed) {
       if (item.action === "debt") {
@@ -140,9 +188,9 @@ export async function POST(req: NextRequest) {
           p_bike_id: item.bike_id,
           p_charge_type: item.charge_type,
           p_amount: item.amount,
-          p_due_date: paymentDate,
-          p_period_start: null,
-          p_period_end: null,
+          p_due_date: dueDate,
+          p_period_start: periodStart,
+          p_period_end: periodEnd,
           p_note: `${note}; DEBT; source_line="${item.line.replaceAll('"', "'")}"`,
           p_admin_tg_id: auth.telegramId,
         });
