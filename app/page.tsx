@@ -2625,7 +2625,7 @@ function AssetOperationsBlock({ showToast, reload }: { showToast: (s: string) =>
       {last && <p className="small okText">OK: {JSON.stringify(last)}</p>}
       <hr className="hr" />
       <p className="small muted">
-        Категории расходов для будущей статистики: <span className="code">bike_purchase</span>, <span className="code">battery_purchase</span>, <span className="code">transport</span>, <span className="code">parts</span>, <span className="code">components</span>, <span className="code">repair_parts</span>, <span className="code">procurement</span>.
+        Категории расходов для будущей статистики: <span className="code">bike_purchase</span>, <span className="code">battery_purchase</span>, <span className="code">transport</span>, <span className="code">parts_purchase</span>, <span className="code">vehicle_parts</span>, <span className="code">vehicle_repair</span>, <span className="code">fuel</span>, <span className="code">parking</span>, <span className="code">vehicle_insurance</span>.
       </p>
     </div>
   );
