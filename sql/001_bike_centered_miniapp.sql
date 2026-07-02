@@ -642,6 +642,8 @@ SECURITY DEFINER
 AS $$
 DECLARE
   v_rental rentals%ROWTYPE;
+  v_deposit_charge_id bigint;
+  v_deposit_payment_id bigint;
 BEGIN
   IF EXISTS (SELECT 1 FROM rentals WHERE bike_id = p_bike_id AND status='active') THEN
     RAISE EXCEPTION 'У велика #% уже есть active-аренда.', p_bike_id;
@@ -669,7 +671,49 @@ BEGIN
   WHERE b.bike_id = p_bike_id
   ON CONFLICT DO NOTHING;
 
-  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_create_rental', jsonb_build_object('rental_id', v_rental.id, 'bike_id', p_bike_id, 'client_id', p_client_id));
+
+  -- patch 0.393: if admin entered deposit on rental creation, record it as a real paid deposit.
+  -- It creates a paid client charge + real client payment + allocation, so client stats and cash stats are not empty.
+  IF COALESCE(p_deposit,0) > 0 THEN
+    INSERT INTO client_charges (
+      client_id, rental_id, bike_id, charge_type, amount, due_date,
+      status, paid_amount, paid_at, notes, created_at,
+      period_start, period_end, remind_client, remind_admin, admin_only
+    ) VALUES (
+      v_rental.client_id, v_rental.id, p_bike_id, 'deposit', COALESCE(p_deposit,0), COALESCE(p_start_date, CURRENT_DATE),
+      'paid', COALESCE(p_deposit,0), now(),
+      trim(both E'\n' from concat_ws(E'\n', '[deposit_on_rental_create]', p_notes)),
+      now(), COALESCE(p_start_date, CURRENT_DATE), COALESCE(p_start_date, CURRENT_DATE), false, false, false
+    )
+    RETURNING id INTO v_deposit_charge_id;
+
+    INSERT INTO client_payments (
+      client_id, rental_id, charge_id, amount, payment_date, method, notes, created_by_telegram_id, created_at
+    ) VALUES (
+      v_rental.client_id, v_rental.id, v_deposit_charge_id, COALESCE(p_deposit,0), COALESCE(p_start_date, CURRENT_DATE),
+      'deposit_on_rental_create', trim(both E'\n' from concat_ws(E'\n', 'deposit from rental creation', p_notes)), p_admin_tg_id, now()
+    )
+    RETURNING id INTO v_deposit_payment_id;
+
+    INSERT INTO miniapp_payment_allocations (payment_id, charge_id, amount, created_by_telegram_id)
+    VALUES (v_deposit_payment_id, v_deposit_charge_id, COALESCE(p_deposit,0), p_admin_tg_id)
+    ON CONFLICT (payment_id, charge_id) DO UPDATE
+      SET amount = EXCLUDED.amount;
+
+    INSERT INTO bot_finance_events (
+      chat_id, message_id, admin_telegram_id, raw_text, line_text, event_date,
+      sign, amount, category, category_label, method,
+      bike_id, rental_id, client_id, payment_id, expense_id,
+      event_type, affects_cash, nominal_amount, cash_amount, currency, created_at
+    ) VALUES (
+      NULL, NULL, p_admin_tg_id, 'deposit on rental create', 'deposit bike #' || p_bike_id::text,
+      COALESCE(p_start_date, CURRENT_DATE), 'income', COALESCE(p_deposit,0), 'deposit', 'Депозит', 'miniapp_deposit',
+      p_bike_id, v_rental.id, v_rental.client_id, v_deposit_payment_id, NULL,
+      'payment_received', true, COALESCE(p_deposit,0), COALESCE(p_deposit,0), 'CZK', now()
+    ) ON CONFLICT DO NOTHING;
+  END IF;
+
+  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_create_rental', jsonb_build_object('rental_id', v_rental.id, 'bike_id', p_bike_id, 'client_id', p_client_id, 'deposit_payment_id', v_deposit_payment_id));
   RETURN to_jsonb(v_rental);
 END;
 $$;
@@ -679,6 +723,7 @@ CREATE OR REPLACE FUNCTION miniapp_close_rental_by_bike(
   p_end_date date DEFAULT CURRENT_DATE,
   p_bike_status text DEFAULT 'free',
   p_notes text DEFAULT NULL,
+  p_deposit_refund numeric DEFAULT 0,
   p_admin_tg_id bigint DEFAULT NULL
 )
 RETURNS jsonb
@@ -687,6 +732,7 @@ SECURITY DEFINER
 AS $$
 DECLARE
   v_rental rentals%ROWTYPE;
+  v_refund_expense_id bigint;
 BEGIN
   SELECT * INTO v_rental
   FROM rentals
@@ -711,7 +757,31 @@ BEGIN
   UPDATE bikes SET status=p_bike_status, updated_at=now() WHERE id=p_bike_id;
   UPDATE batteries SET status=CASE WHEN p_bike_status='rented' THEN 'rented' ELSE 'free' END WHERE bike_id=p_bike_id;
 
-  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_close_rental_by_bike', jsonb_build_object('rental_id', v_rental.id, 'bike_id', p_bike_id, 'bike_status', p_bike_status));
+  -- patch 0.396: record returned deposit as real cash outflow.
+  IF COALESCE(p_deposit_refund,0) > 0 THEN
+    INSERT INTO business_expenses (
+      expense_type, bike_id, amount, expense_date, notes, created_by_telegram_id,
+      payment_method, currency, status
+    ) VALUES (
+      'refund', p_bike_id, COALESCE(p_deposit_refund,0), COALESCE(p_end_date, CURRENT_DATE),
+      trim(both E'\n' from concat_ws(E'\n', 'deposit refund on rental close', 'old rental #' || v_rental.id::text, p_notes)),
+      p_admin_tg_id, 'miniapp_deposit_refund', 'CZK', 'paid'
+    ) RETURNING id INTO v_refund_expense_id;
+
+    INSERT INTO bot_finance_events (
+      chat_id, message_id, admin_telegram_id, raw_text, line_text, event_date,
+      sign, amount, category, category_label, method,
+      bike_id, rental_id, client_id, payment_id, expense_id,
+      event_type, affects_cash, nominal_amount, cash_amount, currency, created_at
+    ) VALUES (
+      NULL, NULL, p_admin_tg_id, 'deposit refund on rental close', 'deposit refund bike #' || p_bike_id::text,
+      COALESCE(p_end_date, CURRENT_DATE), 'expense', COALESCE(p_deposit_refund,0), 'deposit_refund', 'Возврат депозита', 'miniapp_deposit_refund',
+      p_bike_id, v_rental.id, v_rental.client_id, NULL, v_refund_expense_id,
+      'expense_paid', true, COALESCE(p_deposit_refund,0), -COALESCE(p_deposit_refund,0), 'CZK', now()
+    ) ON CONFLICT DO NOTHING;
+  END IF;
+
+  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_close_rental_by_bike', jsonb_build_object('rental_id', v_rental.id, 'bike_id', p_bike_id, 'bike_status', p_bike_status, 'deposit_refund', COALESCE(p_deposit_refund,0)));
   RETURN to_jsonb(v_rental);
 END;
 $$;
@@ -725,6 +795,7 @@ CREATE OR REPLACE FUNCTION miniapp_replace_rental_by_bike(
   p_charger_quantity int DEFAULT 1,
   p_rental_type text DEFAULT 'monthly',
   p_notes text DEFAULT NULL,
+  p_deposit_refund numeric DEFAULT 0,
   p_admin_tg_id bigint DEFAULT NULL
 )
 RETURNS jsonb
@@ -735,6 +806,9 @@ DECLARE
   v_old rentals%ROWTYPE;
   v_new rentals%ROWTYPE;
   v_old_end date;
+  v_deposit_charge_id bigint;
+  v_deposit_payment_id bigint;
+  v_refund_expense_id bigint;
 BEGIN
   SELECT * INTO v_old
   FROM rentals
@@ -764,6 +838,30 @@ BEGIN
   UPDATE payment_rules SET is_active=false, updated_at=now() WHERE rental_id=v_old.id AND is_active=true;
   UPDATE battery_rentals SET status='closed', returned_at=now(), notes=trim(both E'\n' from concat_ws(E'\n', notes, 'replaced_from_miniapp')) WHERE rental_id=v_old.id AND status='active';
 
+  -- patch 0.396: record returned deposit to old client before opening the new contract.
+  IF COALESCE(p_deposit_refund,0) > 0 THEN
+    INSERT INTO business_expenses (
+      expense_type, bike_id, amount, expense_date, notes, created_by_telegram_id,
+      payment_method, currency, status
+    ) VALUES (
+      'refund', p_bike_id, COALESCE(p_deposit_refund,0), v_old_end,
+      trim(both E'\n' from concat_ws(E'\n', 'deposit refund on rental replace', 'old rental #' || v_old.id::text, p_notes)),
+      p_admin_tg_id, 'miniapp_deposit_refund', 'CZK', 'paid'
+    ) RETURNING id INTO v_refund_expense_id;
+
+    INSERT INTO bot_finance_events (
+      chat_id, message_id, admin_telegram_id, raw_text, line_text, event_date,
+      sign, amount, category, category_label, method,
+      bike_id, rental_id, client_id, payment_id, expense_id,
+      event_type, affects_cash, nominal_amount, cash_amount, currency, created_at
+    ) VALUES (
+      NULL, NULL, p_admin_tg_id, 'deposit refund on rental replace', 'deposit refund bike #' || p_bike_id::text,
+      v_old_end, 'expense', COALESCE(p_deposit_refund,0), 'deposit_refund', 'Возврат депозита', 'miniapp_deposit_refund',
+      p_bike_id, v_old.id, v_old.client_id, NULL, v_refund_expense_id,
+      'expense_paid', true, COALESCE(p_deposit_refund,0), -COALESCE(p_deposit_refund,0), 'CZK', now()
+    ) ON CONFLICT DO NOTHING;
+  END IF;
+
   INSERT INTO rentals (bike_id, client_id, price, start_date, end_date, status, created_by, notes, created_at, rental_type, deposit, charger_quantity)
   VALUES (p_bike_id, p_new_client_id, p_price, p_start_date, NULL, 'active', NULL, p_notes, now(), p_rental_type, COALESCE(p_deposit,0), COALESCE(p_charger_quantity,1))
   RETURNING * INTO v_new;
@@ -777,7 +875,49 @@ BEGIN
   WHERE b.bike_id=p_bike_id
   ON CONFLICT DO NOTHING;
 
-  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_replace_rental_by_bike', jsonb_build_object('old_rental_id', v_old.id, 'new_rental_id', v_new.id, 'bike_id', p_bike_id, 'new_client_id', p_new_client_id));
+
+  -- patch 0.393: if admin entered deposit on rental creation, record it as a real paid deposit.
+  -- It creates a paid client charge + real client payment + allocation, so client stats and cash stats are not empty.
+  IF COALESCE(p_deposit,0) > 0 THEN
+    INSERT INTO client_charges (
+      client_id, rental_id, bike_id, charge_type, amount, due_date,
+      status, paid_amount, paid_at, notes, created_at,
+      period_start, period_end, remind_client, remind_admin, admin_only
+    ) VALUES (
+      v_new.client_id, v_new.id, p_bike_id, 'deposit', COALESCE(p_deposit,0), COALESCE(p_start_date, CURRENT_DATE),
+      'paid', COALESCE(p_deposit,0), now(),
+      trim(both E'\n' from concat_ws(E'\n', '[deposit_on_rental_create]', p_notes)),
+      now(), COALESCE(p_start_date, CURRENT_DATE), COALESCE(p_start_date, CURRENT_DATE), false, false, false
+    )
+    RETURNING id INTO v_deposit_charge_id;
+
+    INSERT INTO client_payments (
+      client_id, rental_id, charge_id, amount, payment_date, method, notes, created_by_telegram_id, created_at
+    ) VALUES (
+      v_new.client_id, v_new.id, v_deposit_charge_id, COALESCE(p_deposit,0), COALESCE(p_start_date, CURRENT_DATE),
+      'deposit_on_rental_create', trim(both E'\n' from concat_ws(E'\n', 'deposit from rental creation', p_notes)), p_admin_tg_id, now()
+    )
+    RETURNING id INTO v_deposit_payment_id;
+
+    INSERT INTO miniapp_payment_allocations (payment_id, charge_id, amount, created_by_telegram_id)
+    VALUES (v_deposit_payment_id, v_deposit_charge_id, COALESCE(p_deposit,0), p_admin_tg_id)
+    ON CONFLICT (payment_id, charge_id) DO UPDATE
+      SET amount = EXCLUDED.amount;
+
+    INSERT INTO bot_finance_events (
+      chat_id, message_id, admin_telegram_id, raw_text, line_text, event_date,
+      sign, amount, category, category_label, method,
+      bike_id, rental_id, client_id, payment_id, expense_id,
+      event_type, affects_cash, nominal_amount, cash_amount, currency, created_at
+    ) VALUES (
+      NULL, NULL, p_admin_tg_id, 'deposit on rental create', 'deposit bike #' || p_bike_id::text,
+      COALESCE(p_start_date, CURRENT_DATE), 'income', COALESCE(p_deposit,0), 'deposit', 'Депозит', 'miniapp_deposit',
+      p_bike_id, v_new.id, v_new.client_id, v_deposit_payment_id, NULL,
+      'payment_received', true, COALESCE(p_deposit,0), COALESCE(p_deposit,0), 'CZK', now()
+    ) ON CONFLICT DO NOTHING;
+  END IF;
+
+  PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_replace_rental_by_bike', jsonb_build_object('old_rental_id', v_old.id, 'new_rental_id', v_new.id, 'bike_id', p_bike_id, 'new_client_id', p_new_client_id, 'deposit_payment_id', v_deposit_payment_id));
 
   RETURN jsonb_build_object('old_rental_id', v_old.id, 'new_rental_id', v_new.id, 'bike_id', p_bike_id);
 END;
@@ -2433,6 +2573,27 @@ $$;
 -- patch 0.39: client general requests + safer cash stats columns
 -- ─────────────────────────────────────────────────────────────────────────────
 
+CREATE TABLE IF NOT EXISTS bot_finance_events (
+  id bigserial PRIMARY KEY,
+  chat_id bigint,
+  message_id bigint,
+  admin_telegram_id bigint,
+  raw_text text,
+  line_text text,
+  event_date date NOT NULL DEFAULT CURRENT_DATE,
+  sign text NOT NULL DEFAULT 'income',
+  amount numeric(12,2) NOT NULL DEFAULT 0,
+  category text NOT NULL DEFAULT 'other',
+  category_label text,
+  method text DEFAULT 'miniapp_manual',
+  bike_id integer REFERENCES bikes(id) ON DELETE SET NULL,
+  rental_id integer REFERENCES rentals(id) ON DELETE SET NULL,
+  client_id integer REFERENCES clients(id) ON DELETE SET NULL,
+  payment_id integer REFERENCES client_payments(id) ON DELETE SET NULL,
+  expense_id integer REFERENCES business_expenses(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 ALTER TABLE IF EXISTS bot_finance_events ADD COLUMN IF NOT EXISTS event_type text;
 ALTER TABLE IF EXISTS bot_finance_events ADD COLUMN IF NOT EXISTS affects_cash boolean;
 ALTER TABLE IF EXISTS bot_finance_events ADD COLUMN IF NOT EXISTS nominal_amount numeric;
@@ -2510,3 +2671,58 @@ CREATE TABLE IF NOT EXISTS business_debts (
 );
 CREATE INDEX IF NOT EXISTS idx_business_debts_status_due ON business_debts(status, due_date);
 CREATE INDEX IF NOT EXISTS idx_business_debts_counterparty ON business_debts(counterparty_name);
+
+
+-- =========================================================
+-- Patch 0.394: vehicle expense categories base
+-- Авто пока учитывается только как финансовые расходы, без отдельного CRM-модуля авто.
+-- Это нужно, чтобы сообщения вроде "- 1423 запчасти для авто" не падали на CHECK constraint.
+-- =========================================================
+DO $$
+DECLARE
+  allowed text[] := ARRAY[
+    'accessory_purchase','accounting','advertising','bank_fee','battery_purchase','bike_purchase',
+    'charger_purchase','cleaning','hosting','insurance','legal','office','other','parts_purchase',
+    'refund','rent','repair_outsource','salary','tax','tools_purchase','transport','utilities','writeoff',
+    'parts','components','repair_parts','procurement',
+    'vehicle_purchase','vehicle_parts','vehicle_repair','vehicle_service','fuel','parking',
+    'vehicle_insurance','vehicle_tax','vehicle_wash','vehicle_rent','vehicle_other'
+  ];
+  r record;
+BEGIN
+  IF to_regclass('public.business_expenses') IS NOT NULL THEN
+    FOR r IN
+      SELECT conname
+      FROM pg_constraint
+      WHERE conrelid = 'public.business_expenses'::regclass
+        AND contype = 'c'
+        AND pg_get_constraintdef(oid) ILIKE '%expense_type%'
+    LOOP
+      EXECUTE format('ALTER TABLE public.business_expenses DROP CONSTRAINT IF EXISTS %I', r.conname);
+    END LOOP;
+
+    EXECUTE 'ALTER TABLE public.business_expenses '
+      || 'ADD CONSTRAINT business_expenses_expense_type_check '
+      || 'CHECK (expense_type IS NULL OR expense_type IN ('
+      || array_to_string(ARRAY(SELECT quote_literal(x) FROM unnest(allowed) AS x), ',')
+      || ')) NOT VALID';
+  END IF;
+
+  IF to_regclass('public.recurring_expenses') IS NOT NULL THEN
+    FOR r IN
+      SELECT conname
+      FROM pg_constraint
+      WHERE conrelid = 'public.recurring_expenses'::regclass
+        AND contype = 'c'
+        AND pg_get_constraintdef(oid) ILIKE '%expense_type%'
+    LOOP
+      EXECUTE format('ALTER TABLE public.recurring_expenses DROP CONSTRAINT IF EXISTS %I', r.conname);
+    END LOOP;
+
+    EXECUTE 'ALTER TABLE public.recurring_expenses '
+      || 'ADD CONSTRAINT recurring_expenses_expense_type_check '
+      || 'CHECK (expense_type IS NULL OR expense_type IN ('
+      || array_to_string(ARRAY(SELECT quote_literal(x) FROM unnest(allowed) AS x), ',')
+      || ')) NOT VALID';
+  END IF;
+END $$;

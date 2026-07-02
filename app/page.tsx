@@ -1240,6 +1240,7 @@ function DebtTable({
           <th></th>
           <th>ID</th>
           <th>Категория</th>
+          <th>Клиент / велик</th>
           <th>Тип</th>
           <th>Дата</th>
           <th>Сумма</th>
@@ -1264,6 +1265,11 @@ function DebtTable({
               <span className="small muted">{d.charge_type}</span>
             </td>
             <td>{d.category_label || d.category || "-"}</td>
+            <td>
+              <b>{d.client_name || `client #${d.client_id}`}</b>
+              <br />
+              <span className="small muted">{d.bike_label || (d.bike_id ? `вел #${d.bike_id}` : "без велика")}</span>
+            </td>
             <td>
               {d.charge_origin === "planned" ? (
                 <span className="pill warn">план</span>
@@ -1480,18 +1486,36 @@ function RentalActionsBlock({
     showToast("Аренда создана");
     await reload();
   }
+  function askDepositRefund(action: "close" | "replace") {
+    const oldDeposit = Number(active?.deposit || 0);
+    const label = action === "close" ? "закрытием аренды" : "переоформлением договора";
+    const raw = prompt(
+      `Сколько депозита возвращено старому клиенту перед ${label}?\n\nДепозит по старому договору: ${money(oldDeposit)}\nЕсли ничего не возвращали — оставь 0.`,
+      "0",
+    );
+    if (raw === null) return null;
+    const value = Number(String(raw).replace(",", ".") || 0);
+    if (!Number.isFinite(value) || value < 0) {
+      showToast("Сумма возврата депозита некорректна");
+      return null;
+    }
+    return value;
+  }
   async function close() {
     if (!confirm(`Закрыть active-аренду велика #${bike.id}?`)) return;
+    const depositRefund = askDepositRefund("close");
+    if (depositRefund === null) return;
     await api("/api/admin/rentals/close", {
       method: "POST",
       body: JSON.stringify({
         bike_id: bike.id,
         end_date: today(),
         bike_status: closeStatus,
+        deposit_refund: depositRefund,
         notes,
       }),
     });
-    showToast("Аренда закрыта");
+    showToast(depositRefund > 0 ? `Аренда закрыта, возврат депозита ${money(depositRefund)}` : "Аренда закрыта");
     await reload();
   }
   async function replace() {
@@ -1499,6 +1523,8 @@ function RentalActionsBlock({
       !confirm(`Переоформить велик #${bike.id} на нового клиента #${clientId}?`)
     )
       return;
+    const depositRefund = askDepositRefund("replace");
+    if (depositRefund === null) return;
     await api("/api/admin/rentals/replace", {
       method: "POST",
       body: JSON.stringify({
@@ -1509,10 +1535,11 @@ function RentalActionsBlock({
         deposit: Number(deposit),
         charger_quantity: Number(chargers),
         rental_type: "monthly",
+        deposit_refund: depositRefund,
         notes,
       }),
     });
-    showToast("Новый договор создан");
+    showToast(depositRefund > 0 ? `Новый договор создан, возврат депозита ${money(depositRefund)}` : "Новый договор создан");
     await reload();
   }
   return (

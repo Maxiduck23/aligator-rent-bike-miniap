@@ -12,6 +12,7 @@ export async function POST(req: NextRequest) {
       p_end_date: body.end_date || new Date().toISOString().slice(0, 10),
       p_bike_status: optionalString(body.bike_status) || 'free',
       p_notes: optionalString(body.notes),
+      p_deposit_refund: Number(body.deposit_refund || 0),
       p_admin_tg_id: auth.telegramId
     });
     if (error) throw error;

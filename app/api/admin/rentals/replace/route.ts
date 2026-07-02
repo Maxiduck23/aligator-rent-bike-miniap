@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
       p_charger_quantity: Number(body.charger_quantity || 1),
       p_rental_type: optionalString(body.rental_type) || 'monthly',
       p_notes: optionalString(body.notes),
+      p_deposit_refund: Number(body.deposit_refund || 0),
       p_admin_tg_id: auth.telegramId
     });
     if (error) throw error;
