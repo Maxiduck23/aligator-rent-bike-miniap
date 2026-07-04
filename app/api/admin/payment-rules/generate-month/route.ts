@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { fail, ok, requiredNumber } from '@/lib/http';
 import { requireAdmin } from '@/lib/telegram';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { currentMonthIso } from '@/lib/paymentPlan';
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +13,8 @@ export async function POST(req: NextRequest) {
 
     if (year < 2020 || year > 2100) throw new Error('year must be 2020-2100');
     if (month < 1 || month > 12) throw new Error('month must be 1-12');
+    const targetMonth = `${year}-${String(month).padStart(2, '0')}`;
+    if (targetMonth < currentMonthIso()) throw new Error('Нельзя начислить плановые долги за прошлый месяц');
 
     const { data, error } = await supabaseAdmin.rpc('miniapp_generate_month_charges_by_bike', {
       p_bike_id: requiredNumber(body.bike_id, 'bike_id'),

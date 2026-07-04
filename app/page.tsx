@@ -309,7 +309,7 @@ function inviteParam(): string {
 }
 
 function currentMonth() {
-  return new Date().toISOString().slice(0, 7);
+  return today().slice(0, 7);
 }
 
 function daysInMonth(month: string) {
@@ -323,6 +323,93 @@ function actualDueDate(month: string, dueDay: number) {
   const d = Math.min(Math.max(Number(dueDay || 1), 1), daysInMonth(month));
   if (!Number.isFinite(y) || !Number.isFinite(m)) return "";
   return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function currentDayOfMonth() {
+  return Number(today().slice(8, 10));
+}
+
+function minDueDayForMonth(month: string) {
+  if (!month || month < currentMonth()) return daysInMonth(month) + 1;
+  if (month === currentMonth()) return currentDayOfMonth();
+  return 1;
+}
+
+function futurePresetDays(month: string, count: number) {
+  const max = daysInMonth(month);
+  const min = minDueDayForMonth(month);
+  if (min > max) return [] as number[];
+
+  const base =
+    count === 1
+      ? [1]
+      : count === 2
+        ? [1, 15]
+        : count === 4
+          ? [1, 8, 15, 22]
+          : Array.from({ length: count }, (_, i) =>
+              Math.min(1 + i * Math.floor(28 / count), 28),
+            );
+
+  const out: number[] = [];
+  for (const raw of base) {
+    let d = Math.min(Math.max(raw, min), max);
+    while (out.includes(d) && d < max) d += 1;
+    if (!out.includes(d) && d >= min && d <= max) out.push(d);
+  }
+
+  for (let d = min; out.length < count && d <= max; d += 1) {
+    if (!out.includes(d)) out.push(d);
+  }
+
+  return out.slice(0, count);
+}
+
+function validatePaymentPlan(month: string, parts: Part[], monthly: number) {
+  const errors: string[] = [];
+  const todayIso = today();
+  const expected = Number(monthly || 0);
+  const sum = parts.reduce((s, p) => s + Number(p.amount || 0), 0);
+
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    errors.push("Выбери месяц начисления.");
+  }
+  if (!parts.length) {
+    errors.push("Добавь хотя бы одну часть оплаты.");
+  }
+  if (expected <= 0) {
+    errors.push("Месячная сумма должна быть больше 0.");
+  }
+  if (sum < expected) {
+    errors.push(`Сумма частей меньше месячной суммы: ${money(sum)} / ${money(expected)}.`);
+  }
+
+  const usedDates = new Map<string, number>();
+  parts.forEach((p, idx) => {
+    const dueDay = Number(p.due_day);
+    const amount = Number(p.amount || 0);
+    if (!Number.isFinite(dueDay) || dueDay < 1 || dueDay > 31) {
+      errors.push(`Часть #${idx + 1}: день месяца должен быть от 1 до 31.`);
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      errors.push(`Часть #${idx + 1}: сумма должна быть больше 0.`);
+    }
+    const date = actualDueDate(month, dueDay);
+    if (date && date < todayIso) {
+      errors.push(`Часть #${idx + 1}: дата ${date} уже прошла. План можно ставить только на сегодня или будущую дату.`);
+    }
+    if (date) {
+      const prev = usedDates.get(date);
+      if (prev !== undefined) {
+        errors.push(`Части #${prev + 1} и #${idx + 1}: дата ${date} повторяется. Для нескольких платежей даты должны отличаться.`);
+      } else {
+        usedDates.set(date, idx);
+      }
+    }
+  });
+
+  return { ok: errors.length === 0, errors, sum };
 }
 
 function monthParts(month: string) {
@@ -354,19 +441,33 @@ function PartsEditor({
   setParts: (p: Part[]) => void;
   previewMonth: string;
 }) {
-  const sum = parts.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const validation = validatePaymentPlan(previewMonth, parts, monthly);
+  const sum = validation.sum;
+  const minDueDay = minDueDayForMonth(previewMonth);
+  const maxDueDay = daysInMonth(previewMonth);
+  const canAddMoreDays = parts.length < Math.max(0, maxDueDay - minDueDay + 1);
+
+  function nextFreeDueDay() {
+    const used = new Set(parts.map((p) => actualDueDate(previewMonth, p.due_day)));
+    for (let d = Math.max(1, minDueDay); d <= maxDueDay; d += 1) {
+      const date = actualDueDate(previewMonth, d);
+      if (!used.has(date)) return d;
+    }
+    return Math.max(1, Math.min(maxDueDay, minDueDay));
+  }
+
   function preset(count: number) {
+    const days = futurePresetDays(previewMonth, count);
+    if (days.length < count) {
+      setParts(
+        days.map((d, idx) => ({
+          due_day: d,
+          amount: idx === days.length - 1 ? monthly : Math.round(monthly / Math.max(days.length, 1)),
+        })),
+      );
+      return;
+    }
     const amount = Math.round(monthly / count);
-    const days =
-      count === 1
-        ? [1]
-        : count === 2
-          ? [1, 15]
-          : count === 4
-            ? [1, 8, 15, 22]
-            : Array.from({ length: count }, (_, i) =>
-                Math.min(1 + i * Math.floor(28 / count), 28),
-              );
     setParts(
       days.map((d, idx) => ({
         due_day: d,
@@ -391,7 +492,9 @@ function PartsEditor({
         </button>
         <button
           className="btn"
-          onClick={() => setParts([...parts, { due_day: 1, amount: 0 }])}
+          disabled={!canAddMoreDays}
+          onClick={() => setParts([...parts, { due_day: nextFreeDueDay(), amount: 0 }])}
+          title={!canAddMoreDays ? "В выбранном месяце уже нет свободных будущих дат" : "Добавить ещё одну дату оплаты"}
         >
           + часть
         </button>
@@ -404,7 +507,7 @@ function PartsEditor({
             <input
               className="input"
               type="number"
-              min={1}
+              min={Math.max(1, minDueDay)}
               max={31}
               value={p.due_day}
               onChange={(e) =>
@@ -446,13 +549,22 @@ function PartsEditor({
         </div>
       ))}
       <div className="space">
-        <span className={sum < monthly ? "dangerText" : "okText"}>
+        <span className={validation.ok ? "okText" : "dangerText"}>
           Итого {money(sum)} / {money(monthly)}
         </span>
       </div>
+      {!validation.ok && (
+        <div className="small dangerText" style={{ marginTop: 6 }}>
+          {validation.errors.map((err) => (
+            <div key={err}>• {err}</div>
+          ))}
+        </div>
+      )}
       <p className="small muted">
-        Дни 29/30/31 автоматически превращаются в последний день короткого
-        месяца. Например, 31 февраля станет 28/29.
+        Плановые даты можно ставить только на сегодня или будущее. Если платежей
+        несколько, даты должны отличаться. Дни 29/30/31 автоматически
+        превращаются в последний день короткого месяца. Например, 31 февраля
+        станет 28/29.
       </p>
     </>
   );
@@ -1317,19 +1429,28 @@ function PaymentRuleBlock({
   const [monthly, setMonthly] = useState<number>(
     Number(active?.price || bike.active_price || 6000),
   );
-  const [parts, setParts] = useState<Part[]>([
-    { due_day: 1, amount: Number(active?.price || bike.active_price || 6000) },
-  ]);
   const [month, setMonth] = useState(currentMonth());
+  const [parts, setParts] = useState<Part[]>([
+    { due_day: minDueDayForMonth(currentMonth()), amount: Number(active?.price || bike.active_price || 6000) },
+  ]);
   const [allowClientEdit, setAllowClientEdit] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(true);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<"save" | "generate" | "both" | null>(null);
-  const sum = parts.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const planValidation = validatePaymentPlan(month, parts, monthly);
+  const sum = planValidation.sum;
+
+  function showPlanValidationError() {
+    showToast(planValidation.errors[0] || "Проверь даты и суммы правила оплаты");
+  }
 
   async function saveRule(options: { silent?: boolean } = {}) {
     if (!active) {
       showToast("У велика нет active-аренды");
+      return null;
+    }
+    if (!planValidation.ok) {
+      showPlanValidationError();
       return null;
     }
     const data = await api<any>("/api/admin/payment-rules", {
@@ -1338,6 +1459,7 @@ function PaymentRuleBlock({
         bike_id: bike.id,
         monthly_amount: monthly,
         parts,
+        month,
         allow_client_edit: allowClientEdit,
         requires_admin_approval: requiresApproval,
         note: note || "created from Mini App",
@@ -1367,6 +1489,10 @@ function PaymentRuleBlock({
   async function generateMonth(options: { skipReload?: boolean } = {}) {
     if (!active) {
       showToast("У велика нет active-аренды");
+      return null;
+    }
+    if (!planValidation.ok) {
+      showPlanValidationError();
       return null;
     }
     const mp = monthParts(month);
@@ -1400,6 +1526,7 @@ function PaymentRuleBlock({
   async function saveAndGenerateMonth() {
     if (busy) return;
     if (!active) return showToast("У велика нет active-аренды");
+    if (!planValidation.ok) return showPlanValidationError();
     try {
       setBusy("both");
       await saveRule({ silent: true });
@@ -1434,6 +1561,7 @@ function PaymentRuleBlock({
           <input
             className="input"
             type="month"
+            min={currentMonth()}
             value={month}
             onChange={(e) => setMonth(e.target.value)}
           />
@@ -1475,7 +1603,7 @@ function PaymentRuleBlock({
       <div className="row" style={{ marginTop: 10 }}>
         <button
           className="btn primary"
-          disabled={!active || sum < monthly || Boolean(busy)}
+          disabled={!active || !planValidation.ok || Boolean(busy)}
           onClick={save}
           title="Сохраняет график оплат, но сам месяц ещё не начисляет"
         >
@@ -1483,7 +1611,7 @@ function PaymentRuleBlock({
         </button>
         <button
           className="btn warn"
-          disabled={!active || Boolean(busy)}
+          disabled={!active || !planValidation.ok || Boolean(busy)}
           onClick={generateOnly}
           title="Создаёт фиктивные долги за выбранный месяц по уже сохранённому правилу"
         >
@@ -1491,7 +1619,7 @@ function PaymentRuleBlock({
         </button>
         <button
           className="btn ok"
-          disabled={!active || sum < monthly || Boolean(busy)}
+          disabled={!active || !planValidation.ok || Boolean(busy)}
           onClick={saveAndGenerateMonth}
           title="Сначала сохраняет текущий график, потом сразу создаёт фиктивные долги выбранного месяца"
         >
@@ -3160,11 +3288,18 @@ function RuleRequestsTab({ showToast }: { showToast: (s: string) => void }) {
   }, [status]);
   async function decide(id: number, decision: "approve" | "reject") {
     const note = prompt(decision === "approve" ? "Комментарий к подтверждению" : "Причина отказа", "");
-    await api("/api/admin/payment-rule-requests", {
+    const res: any = await api("/api/admin/payment-rule-requests", {
       method: "POST",
       body: JSON.stringify({ request_id: id, decision, admin_note: note }),
     });
-    showToast(decision === "approve" ? "Запрос подтверждён" : "Запрос отклонён");
+    if (decision === "approve") {
+      const gen = res?.generated_current_month;
+      const created = gen?.created_count ?? 0;
+      const existing = gen?.existing_count ?? 0;
+      showToast(`Запрос подтверждён, правило сохранено, начислено: ${created}, уже было: ${existing}`);
+    } else {
+      showToast("Запрос отклонён");
+    }
     await load();
   }
   async function setGeneralStatus(id: number, next: string) {
@@ -3229,7 +3364,7 @@ function RuleRequestsTab({ showToast }: { showToast: (s: string) => void }) {
               <p>{r.reason || "Без причины"}</p>
               {r.status === "pending" && (
                 <div className="row">
-                  <button className="btn ok" onClick={() => decide(r.id, "approve")}>✅ Подтвердить</button>
+                  <button className="btn ok" onClick={() => decide(r.id, "approve")}>✅ Подтвердить и начислить месяц</button>
                   <button className="btn danger" onClick={() => decide(r.id, "reject")}>❌ Отклонить</button>
                 </div>
               )}
@@ -3908,7 +4043,7 @@ function ClientRuleRequestBlock({
         }))
       : [
           {
-            due_day: 1,
+            due_day: minDueDayForMonth(currentMonth()),
             amount: Number(
               currentRule?.monthly_amount || rental?.price || 6000,
             ),
@@ -3916,14 +4051,18 @@ function ClientRuleRequestBlock({
         ],
   );
   const [reason, setReason] = useState("");
+  const planValidation = validatePaymentPlan(month, parts, monthly);
+
   async function submit() {
     if (!rental) return showToast("Нет active аренды");
+    if (!planValidation.ok) return showToast(planValidation.errors[0] || "Проверь даты и суммы правила оплаты");
     await api("/api/client/payment-rule-requests", {
       method: "POST",
       body: JSON.stringify({
         rental_id: rental.id,
         monthly_amount: monthly,
         parts,
+        month,
         reason,
       }),
     });
@@ -3950,6 +4089,7 @@ function ClientRuleRequestBlock({
           <input
             className="input"
             type="month"
+            min={currentMonth()}
             value={month}
             onChange={(e) => setMonth(e.target.value)}
           />
@@ -3972,7 +4112,7 @@ function ClientRuleRequestBlock({
       </label>
       <button
         className="btn primary"
-        disabled={!rental || !reason}
+        disabled={!rental || !reason || !planValidation.ok}
         onClick={submit}
       >
         Отправить запрос админу

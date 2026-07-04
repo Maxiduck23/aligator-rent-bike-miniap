@@ -21,6 +21,11 @@ DROP VIEW IF EXISTS public.miniapp_batteries CASCADE;
 DROP VIEW IF EXISTS public.miniapp_active_rentals CASCADE;
 DROP VIEW IF EXISTS public.miniapp_clients CASCADE;
 
+-- patch 0.398 safety: old CHECK constraints from earlier DB versions can block
+-- monthly_parts rules and rent_plan generated charges. They do not delete data.
+ALTER TABLE public.payment_rules DROP CONSTRAINT IF EXISTS payment_rules_split_check;
+ALTER TABLE public.client_charges DROP CONSTRAINT IF EXISTS client_charges_type_check;
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- MiniApp-only exclusions: safe alternative to deleting/cancelling old charges.
 -- Excluded charges are hidden in Mini App debt screen, but raw client_charges stays unchanged.
@@ -1010,6 +1015,12 @@ BEGIN
     END IF;
   END LOOP;
 
+  -- patch 0.397: if the client already has an advance, immediately apply it to newly created planned charges.
+  -- This prevents the UI state “advance and open debt at the same time”.
+  IF v_created_count > 0 THEN
+    PERFORM miniapp_allocate_client_advance(v_rental.client_id, p_admin_tg_id);
+  END IF;
+
   PERFORM miniapp_audit(
     p_admin_tg_id,
     'miniapp_generate_month_charges_by_bike',
@@ -1388,6 +1399,21 @@ BEGIN
     'charge_ids', v_charge_ids,
     'payment_ids', v_payment_ids
   );
+END;
+$$;
+
+-- patch 0.398 compatibility wrapper: some API/RPC calls pass bigint,bigint.
+-- Keep the old implementation and forward to it as (client_id, admin_tg_id, category).
+CREATE OR REPLACE FUNCTION miniapp_allocate_client_advance(
+  p_client_id bigint,
+  p_admin_tg_id bigint DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN public.miniapp_allocate_client_advance(p_client_id::int, p_admin_tg_id, 'auto');
 END;
 $$;
 
@@ -1841,6 +1867,10 @@ DECLARE
   v_part_number int := 0;
   v_rule payment_rules%ROWTYPE;
   v_decision text := lower(coalesce(p_decision, 'reject'));
+  v_generate_result jsonb := NULL;
+  v_deleted_planned_count int := 0;
+  v_charge_year int := extract(year from CURRENT_DATE)::int;
+  v_charge_month int := extract(month from CURRENT_DATE)::int;
 BEGIN
   SELECT * INTO v_req
   FROM miniapp_payment_rule_change_requests
@@ -1858,6 +1888,16 @@ BEGIN
   END IF;
 
   IF v_decision IN ('approve','approved') THEN
+    -- patch 0.398: approving a client payment-rule request must behave like admin rule replacement.
+    -- Remove only unpaid generated plan rows for the same rental before installing the new rule.
+    -- Real manual charges and already paid/partial plan rows are not touched.
+    DELETE FROM client_charges ch
+    WHERE ch.rental_id = v_req.rental_id
+      AND ch.status = 'due'
+      AND COALESCE(ch.paid_amount, 0) = 0
+      AND miniapp_charge_origin(ch.charge_type, ch.notes) = 'planned';
+    GET DIAGNOSTICS v_deleted_planned_count = ROW_COUNT;
+
     UPDATE payment_rules
     SET is_active = false,
         updated_at = now(),
@@ -1889,8 +1929,29 @@ BEGIN
     SET status = 'approved', admin_note = p_admin_note, decided_by_telegram_id = p_admin_tg_id, decided_at = now(), updated_at = now()
     WHERE id = p_request_id;
 
-    PERFORM miniapp_audit(p_admin_tg_id, 'miniapp_admin_approve_payment_rule_change', jsonb_build_object('request_id', p_request_id, 'rule_id', v_rule.id));
-    RETURN jsonb_build_object('request_id', p_request_id, 'status', 'approved', 'rule_id', v_rule.id);
+    -- patch 0.398: immediately create planned rent charges for the current month after approval.
+    -- If an advance exists, miniapp_generate_month_charges_by_bike will allocate it automatically.
+    IF v_req.bike_id IS NOT NULL THEN
+      v_generate_result := miniapp_generate_month_charges_by_bike(v_req.bike_id, v_charge_year, v_charge_month, p_admin_tg_id);
+    END IF;
+
+    PERFORM miniapp_audit(
+      p_admin_tg_id,
+      'miniapp_admin_approve_payment_rule_change',
+      jsonb_build_object(
+        'request_id', p_request_id,
+        'rule_id', v_rule.id,
+        'deleted_unpaid_planned_charges', v_deleted_planned_count,
+        'generated_current_month', v_generate_result
+      )
+    );
+    RETURN jsonb_build_object(
+      'request_id', p_request_id,
+      'status', 'approved',
+      'rule_id', v_rule.id,
+      'deleted_unpaid_planned_charges', v_deleted_planned_count,
+      'generated_current_month', v_generate_result
+    );
   ELSE
     UPDATE miniapp_payment_rule_change_requests
     SET status = 'rejected', admin_note = p_admin_note, decided_by_telegram_id = p_admin_tg_id, decided_at = now(), updated_at = now()

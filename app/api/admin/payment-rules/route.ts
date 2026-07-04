@@ -2,12 +2,17 @@ import { NextRequest } from 'next/server';
 import { fail, ok, optionalString, requiredNumber } from '@/lib/http';
 import { requireAdmin } from '@/lib/telegram';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { validatePaymentPlanInput } from '@/lib/paymentPlan';
 
 export async function POST(req: NextRequest) {
   try {
     const auth = requireAdmin(req);
     const body = await req.json();
-    if (!Array.isArray(body.parts) || body.parts.length === 0) throw new Error('parts is required');
+    validatePaymentPlanInput({
+      month: body.month,
+      parts: body.parts,
+      monthlyAmount: requiredNumber(body.monthly_amount, 'monthly_amount'),
+    });
 
     const { data, error } = await supabaseAdmin.rpc('miniapp_set_payment_rule_by_bike', {
       p_bike_id: requiredNumber(body.bike_id, 'bike_id'),
