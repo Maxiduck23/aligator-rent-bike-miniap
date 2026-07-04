@@ -1324,10 +1324,15 @@ function PaymentRuleBlock({
   const [allowClientEdit, setAllowClientEdit] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(true);
   const [note, setNote] = useState("");
+  const [busy, setBusy] = useState<"save" | "generate" | "both" | null>(null);
   const sum = parts.reduce((s, p) => s + Number(p.amount || 0), 0);
-  async function save() {
-    if (!active) return showToast("У велика нет active-аренды");
-    await api("/api/admin/payment-rules", {
+
+  async function saveRule(options: { silent?: boolean } = {}) {
+    if (!active) {
+      showToast("У велика нет active-аренды");
+      return null;
+    }
+    const data = await api<any>("/api/admin/payment-rules", {
       method: "POST",
       body: JSON.stringify({
         bike_id: bike.id,
@@ -1338,13 +1343,32 @@ function PaymentRuleBlock({
         note: note || "created from Mini App",
       }),
     });
-    showToast(
-      "Правило сохранено; старые неоплаченные фиктивные планы этой аренды удалены",
-    );
-    await reload();
+    if (!options.silent) {
+      showToast(
+        `Правило оплаты сохранено. Удалено старых неоплаченных плановых долгов: ${data?.deleted_unpaid_planned_charges ?? 0}`,
+      );
+      await reload();
+    }
+    return data;
   }
-  async function generateMonth() {
-    if (!active) return showToast("У велика нет active-аренды");
+
+  async function save() {
+    if (busy) return;
+    try {
+      setBusy("save");
+      await saveRule();
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось сохранить правило оплаты");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function generateMonth(options: { skipReload?: boolean } = {}) {
+    if (!active) {
+      showToast("У велика нет active-аренды");
+      return null;
+    }
     const mp = monthParts(month);
     const res = await api<any>("/api/admin/payment-rules/generate-month", {
       method: "POST",
@@ -1355,9 +1379,37 @@ function PaymentRuleBlock({
       }),
     });
     showToast(
-      `Начисления: создано ${res.created_count}, уже было ${res.existing_count}`,
+      `Фиктивные долги за ${month}: создано ${res.created_count}, уже было ${res.existing_count}`,
     );
-    await reload();
+    if (!options.skipReload) await reload();
+    return res;
+  }
+
+  async function generateOnly() {
+    if (busy) return;
+    try {
+      setBusy("generate");
+      await generateMonth();
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось начислить фиктивные долги месяца");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveAndGenerateMonth() {
+    if (busy) return;
+    if (!active) return showToast("У велика нет active-аренды");
+    try {
+      setBusy("both");
+      await saveRule({ silent: true });
+      await generateMonth({ skipReload: true });
+      await reload();
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось сохранить правило и начислить месяц");
+    } finally {
+      setBusy(null);
+    }
   }
   return (
     <div className="card">
@@ -1423,19 +1475,37 @@ function PaymentRuleBlock({
       <div className="row" style={{ marginTop: 10 }}>
         <button
           className="btn primary"
-          disabled={!active || sum < monthly}
+          disabled={!active || sum < monthly || Boolean(busy)}
           onClick={save}
+          title="Сохраняет график оплат, но сам месяц ещё не начисляет"
         >
-          Сохранить план
+          {busy === "save" ? "Сохраняю..." : "Сохранить правило оплаты"}
         </button>
-        <button className="btn warn" disabled={!active} onClick={generateMonth}>
-          Создать фиктивные долги месяца
+        <button
+          className="btn warn"
+          disabled={!active || Boolean(busy)}
+          onClick={generateOnly}
+          title="Создаёт фиктивные долги за выбранный месяц по уже сохранённому правилу"
+        >
+          {busy === "generate" ? "Начисляю..." : "Начислить месяц по сохранённому правилу"}
+        </button>
+        <button
+          className="btn ok"
+          disabled={!active || sum < monthly || Boolean(busy)}
+          onClick={saveAndGenerateMonth}
+          title="Сначала сохраняет текущий график, потом сразу создаёт фиктивные долги выбранного месяца"
+        >
+          {busy === "both" ? "Сохраняю и начисляю..." : "Сохранить и начислить выбранный месяц"}
         </button>
       </div>
       <p className="small muted">
-        Правило = план. При смене правила удаляются только старые НЕОПЛАЧЕННЫЕ
-        фиктивные rent_plan-долги этой аренды. Реальные ремонты/депозиты/ручные
-        начисления и уже закрытые строки не трогаются.
+        <b>Сохранить правило оплаты</b> — только сохраняет график: дни месяца и суммы.
+        Деньги/долги от этого ещё не появляются. <b>Начислить месяц</b> — создаёт
+        фиктивные rent_plan-долги за выбранный месяц. <b>Сохранить и начислить</b> —
+        безопасная кнопка для обычного сценария: сначала сохраняет текущие поля, потом
+        сразу создаёт начисления выбранного месяца. При смене правила удаляются только
+        старые НЕОПЛАЧЕННЫЕ фиктивные rent_plan-долги этой active-аренды. Реальные
+        ремонты/депозиты/ручные начисления и уже закрытые строки не трогаются.
       </p>
     </div>
   );
