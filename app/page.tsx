@@ -1,5 +1,6 @@
 "use client";
 
+import RentalContractForm from "@/components/rentals/RentalContractForm";
 import { useEffect, useMemo, useState } from "react";
 
 declare global {
@@ -1188,7 +1189,7 @@ function BikeContextPanel({
         showToast={showToast}
         reload={reload}
       />
-      <RentalActionsBlock
+      <RentalContractForm
         bike={ctx.bike}
         active={active}
         showToast={showToast}
@@ -3889,7 +3890,7 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
         </table>
       </div>
       <ClientGeneralRequestBlock showToast={showToast} reload={load} />
-      <ClientRuleRequestBlock data={data} showToast={showToast} reload={load} />
+      {/* Правило оплаты доступно только администратору */}
       <div className="card">
         <h3>Открытые долги</h3>
         {data.debts.length ? (
@@ -3998,7 +3999,6 @@ function ClientGeneralRequestBlock({ showToast, reload }: { showToast: (s: strin
             <option value="rent_request">🚲 Хочу арендовать велик</option>
             <option value="battery_request">🔋 Нужна доп. батарея</option>
             <option value="repair_request">🛠 Нужен ремонт</option>
-            <option value="payment_rule_request">💰 Хочу изменить оплату</option>
             <option value="return_request">🔁 Хочу вернуть велик</option>
             <option value="accessory_request">📦 Нужен аксессуар / зарядка</option>
             <option value="other_request">❓ Другое</option>
