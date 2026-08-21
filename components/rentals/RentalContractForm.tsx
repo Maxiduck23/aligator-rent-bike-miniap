@@ -1,807 +1,303 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
-type Props = {
-  bike: any;
-  active: any;
-  showToast: (text: string) => void;
-  reload: () => Promise<void>;
-};
-
-type PlanStep = {
-  id: number;
-  step_number: number;
-  offset_days: number;
-  amount: number;
-  charge_type: "rent" | "deposit";
-  label: string;
-};
-
-type Plan = {
-  id: number;
-  code: string;
-  name: string;
-  description?: string | null;
-  first_period_rent: number;
-  recurring_rent: number;
-  deposit_amount: number;
-  included_batteries: number;
-  included_chargers: number;
-  minimum_months: number;
-  extra_battery_monthly_fee: number;
-  rental_plan_steps?: PlanStep[];
-};
-
-type Client = {
-  id: number;
-  name: string;
-};
-
-type BatteryType = {
-  id: number;
-  brand?: string | null;
-  capacity?: string | null;
-  generation?: string | null;
-};
-
-type Battery = {
-  id: number;
-  inventory_code?: string | null;
-  indexing_status?: string | null;
-  status?: string | null;
-  type_id: number;
-  brand?: string | null;
-  capacity?: string | null;
-  generation?: string | null;
-};
-
+type Props = { bike: any; active: any; showToast: (text: string) => void; reload: () => Promise<void> };
 type BatteryMode = "existing" | "create" | "temporary";
+type BatterySlot = { mode: BatteryMode; battery_id?: number; type_id?: number; note?: string };
+type Plan = any;
+type OptionsPayload = { clients: any[]; battery_types: any[]; available_batteries: any[] };
 
-type BatterySlot = {
-  mode: BatteryMode;
-  battery_id?: number;
-  type_id?: number;
-  note?: string;
-};
-
-type OptionsPayload = {
-  clients: Client[];
-  battery_types: BatteryType[];
-  available_batteries: Battery[];
-};
-
-function tgInitData() {
-  if (typeof window === "undefined") return "";
-  return (window as any).Telegram?.WebApp?.initData || "";
-}
-
+function tgInitData() { if (typeof window === "undefined") return ""; return (window as any).Telegram?.WebApp?.initData || ""; }
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "x-telegram-init-data": tgInitData(),
-      ...(options.headers || {}),
-    },
-  });
+  const res = await fetch(url, { ...options, headers: { "Content-Type": "application/json", "x-telegram-init-data": tgInitData(), ...(options.headers || {}) } });
   const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
-  if (!res.ok || !json.ok) {
-    const error = json?.error;
-    const message =
-      typeof error === "string"
-        ? error
-        : [error?.message, error?.details, error?.hint, error?.code].filter(Boolean).join(" | ") ||
-          "API error";
-    throw new Error(message);
-  }
+  if (!res.ok || !json.ok) { const e = json?.error; throw new Error(typeof e === "string" ? e : e?.message || e?.details || "API error"); }
   return json.data as T;
 }
-
-function localToday() {
-  const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0, 10);
-}
-
-function addDays(date: string, days: number) {
-  const d = new Date(`${date}T12:00:00`);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-function addMonths(date: string, months: number) {
-  const d = new Date(`${date}T12:00:00`);
-  const originalDay = d.getDate();
-  d.setDate(1);
-  d.setMonth(d.getMonth() + months);
-  const max = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(originalDay, max));
-  return d.toISOString().slice(0, 10);
-}
-
-function money(value: unknown) {
-  return `${Math.round(Number(value || 0))} Kč`;
-}
-
-function batteryLabel(b: Battery) {
-  const code = b.inventory_code || `BAT DB#${b.id}`;
-  const details = [b.brand, b.capacity, b.generation].filter(Boolean).join(" ");
-  const temp = b.indexing_status === "temporary" ? " · временная" : "";
-  return `${code}${details ? ` · ${details}` : ""}${temp}`;
-}
-
-function typeLabel(t: BatteryType) {
-  return [t.brand || `Тип #${t.id}`, t.capacity, t.generation].filter(Boolean).join(" · ");
-}
-
-function defaultSlot(options: OptionsPayload): BatterySlot {
-  const firstExisting = options.available_batteries[0];
-  const firstType = options.battery_types[0];
-  if (firstExisting) return { mode: "existing", battery_id: firstExisting.id };
-  return { mode: "temporary", type_id: firstType?.id };
-}
+function localToday() { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); }
+function money(v: unknown) { return `${Math.round(Number(v || 0))} Kč`; }
+function typeLabel(t: any) { return [t.brand || `Тип #${t.id}`, t.capacity, t.generation].filter(Boolean).join(" · "); }
+function batteryLabel(b: any) { return `${b.inventory_code || `BAT #${b.id}`}${b.indexing_status === "temporary" ? " · временная" : ""}`; }
+function modelValue(plan: any, key: string) { const o = plan?.model_price_override; return Number(o?.[key] ?? plan?.[key] ?? 0); }
 
 export default function RentalContractForm({ bike, active, showToast, reload }: Props) {
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [options, setOptions] = useState<OptionsPayload>({
-    clients: [],
-    battery_types: [],
-    available_batteries: [],
-  });
-  const [loading, setLoading] = useState(true);
+  const [options, setOptions] = useState<OptionsPayload>({ clients: [], battery_types: [], available_batteries: [] });
+  const [equipment, setEquipment] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
+  // New contract
   const [clientId, setClientId] = useState("");
   const [planCode, setPlanCode] = useState("monthly_2_batteries");
   const [startDate, setStartDate] = useState(localToday());
   const [extraCount, setExtraCount] = useState(0);
   const [chargerQuantity, setChargerQuantity] = useState(2);
   const [slots, setSlots] = useState<BatterySlot[]>([]);
-  const [initialPayment, setInitialPayment] = useState(0);
-  const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [customize, setCustomize] = useState(false);
+  const [customRecurring, setCustomRecurring] = useState("");
+  const [customDeposit, setCustomDeposit] = useState("");
+  const [customFirst, setCustomFirst] = useState("");
   const [notes, setNotes] = useState("");
+
+  // Active edit
+  const [editing, setEditing] = useState(false);
+  const [editClient, setEditClient] = useState("");
+  const [editRecurring, setEditRecurring] = useState("");
+  const [editDeposit, setEditDeposit] = useState("");
+  const [editChargers, setEditChargers] = useState("");
+  const [editBillableExtra, setEditBillableExtra] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [moveHistory, setMoveHistory] = useState(false);
+  const [newBikeId, setNewBikeId] = useState("");
+  const [keepBatteries, setKeepBatteries] = useState(true);
   const [closeStatus, setCloseStatus] = useState("free");
 
-  const [extraSlot, setExtraSlot] = useState<BatterySlot>({
-    mode: "temporary",
-  });
-  const [extraChargeNow, setExtraChargeNow] = useState(true);
+  // Add battery
+  const [extraSlot, setExtraSlot] = useState<BatterySlot>({ mode: "temporary" });
+  const [extraChargeNow, setExtraChargeNow] = useState(false);
 
   const selectedPlan = plans.find((p) => p.code === planCode) || plans[0] || null;
-  const requiredBatteries = selectedPlan
-    ? Number(selectedPlan.included_batteries || 0) + Number(extraCount || 0)
-    : 0;
+  const included = Number(selectedPlan?.included_batteries ?? 0);
+  const requiredBatteries = included + Number(extraCount || 0);
 
-  const firstDueNow = useMemo(() => {
-    if (!selectedPlan) return 0;
-    const stepNow = (selectedPlan.rental_plan_steps || [])
-      .filter((s) => Number(s.offset_days) === 0)
-      .reduce((sum, s) => sum + Number(s.amount || 0), 0);
-    return stepNow + extraCount * Number(selectedPlan.extra_battery_monthly_fee || 0);
-  }, [selectedPlan, extraCount]);
-
-  const recurringTotal = selectedPlan
-    ? Number(selectedPlan.recurring_rent || 0) +
-      extraCount * Number(selectedPlan.extra_battery_monthly_fee || 0)
-    : 0;
+  function distinctDefaults(opts: OptionsPayload, count: number): BatterySlot[] {
+    const firstType = opts.battery_types[0];
+    return Array.from({ length: count }, (_, i) => {
+      const b = opts.available_batteries[i];
+      return b ? { mode: "existing", battery_id: b.id } : { mode: "temporary", type_id: firstType?.id };
+    });
+  }
 
   async function load() {
     setLoading(true);
     try {
-      const [planRows, optionRows] = await Promise.all([
-        request<Plan[]>("/api/admin/rental-contracts"),
-        request<OptionsPayload>(
-          `/api/admin/rental-contracts/options?bike_id=${encodeURIComponent(bike.id)}`,
-        ),
+      const [p, o] = await Promise.all([
+        request<any[]>(`/api/admin/rental-contracts?bike_id=${encodeURIComponent(bike.id)}`),
+        request<OptionsPayload>(`/api/admin/rental-contracts/options?bike_id=${encodeURIComponent(bike.id)}`),
       ]);
-      setPlans(planRows);
-      setOptions(optionRows);
-
-      const defaultPlan =
-        planRows.find((p) => p.code === planCode) ||
-        planRows.find((p) => p.code === "monthly_2_batteries") ||
-        planRows[0];
-
-      if (defaultPlan) {
-        setPlanCode(defaultPlan.code);
-        setChargerQuantity(Number(defaultPlan.included_chargers || 1));
-        const count = Number(defaultPlan.included_batteries || 0);
-        setSlots(Array.from({ length: count }, () => defaultSlot(optionRows)));
-        const dueNow =
-          (defaultPlan.rental_plan_steps || [])
-            .filter((s) => Number(s.offset_days) === 0)
-            .reduce((sum, s) => sum + Number(s.amount || 0), 0);
-        setInitialPayment(dueNow);
+      setPlans(p); setOptions(o);
+      const def = p.find((x: any) => x.code === planCode) || p.find((x: any) => x.code === "monthly_2_batteries") || p[0];
+      if (def) {
+        setPlanCode(def.code);
+        const inc = Number(def.included_batteries ?? 0);
+        setChargerQuantity(Number(def.included_chargers ?? 1));
+        setSlots(distinctDefaults(o, inc));
+        setCustomRecurring(String(modelValue(def, "recurring_rent")));
+        setCustomDeposit(String(modelValue(def, "deposit_amount")));
+        setCustomFirst(String(modelValue(def, "first_period_rent")));
       }
-
-      if (optionRows.battery_types[0]) {
-        setExtraSlot({ mode: "temporary", type_id: optionRows.battery_types[0].id });
-      }
-    } finally {
-      setLoading(false);
-    }
+      if (o.battery_types[0]) setExtraSlot({ mode: "temporary", type_id: o.battery_types[0].id });
+      if (active?.id) setEquipment(await request<any[]>(`/api/admin/rental-contracts/equipment?rental_id=${active.id}`));
+      else setEquipment([]);
+    } finally { setLoading(false); }
   }
 
-  useEffect(() => {
-    load().catch((e) => showToast(e.message));
-  }, [bike.id]);
-
+  useEffect(() => { load().catch((e) => showToast(e.message)); }, [bike.id, active?.id]);
   useEffect(() => {
     if (!selectedPlan) return;
-    setChargerQuantity(Number(selectedPlan.included_chargers || 1));
-    setSlots((current) => {
-      const next = [...current];
-      while (next.length < requiredBatteries) next.push(defaultSlot(options));
+    const chargers = Number(selectedPlan.included_chargers ?? 1);
+    setChargerQuantity(chargers);
+    setSlots((cur) => {
+      const next = [...cur];
+      const used = new Set(next.filter((s) => s.mode === "existing").map((s) => s.battery_id));
+      for (const b of options.available_batteries) {
+        if (next.length >= requiredBatteries) break;
+        if (!used.has(b.id)) { next.push({ mode: "existing", battery_id: b.id }); used.add(b.id); }
+      }
+      while (next.length < requiredBatteries) next.push({ mode: "temporary", type_id: options.battery_types[0]?.id });
       return next.slice(0, requiredBatteries);
     });
-    setInitialPayment(firstDueNow);
+    if (!customize) {
+      setCustomRecurring(String(modelValue(selectedPlan, "recurring_rent")));
+      setCustomDeposit(String(modelValue(selectedPlan, "deposit_amount")));
+      setCustomFirst(String(modelValue(selectedPlan, "first_period_rent")));
+    }
   }, [planCode, extraCount, requiredBatteries]);
 
-  function updateSlot(index: number, patch: Partial<BatterySlot>) {
-    setSlots((current) =>
-      current.map((slot, i) => (i === index ? { ...slot, ...patch } : slot)),
-    );
-  }
+  useEffect(() => {
+    if (!active) return;
+    setEditClient(String(active.client_id || ""));
+    setEditRecurring(String(active.recurring_rent ?? active.price ?? ""));
+    setEditDeposit(String(active.deposit ?? 0));
+    setEditChargers(String(active.charger_quantity ?? 1));
+    setEditBillableExtra(String(active.extra_batteries ?? 0));
+    setEditNotes(String(active.notes || ""));
+  }, [active?.id]);
 
-  function validateSlots(values: BatterySlot[]) {
-    if (values.length !== requiredBatteries) {
-      throw new Error(`Нужно заполнить ${requiredBatteries} батарейных слотов.`);
-    }
-    const existingIds = values
-      .filter((x) => x.mode === "existing")
-      .map((x) => Number(x.battery_id));
-    if (new Set(existingIds).size !== existingIds.length) {
-      throw new Error("Одна существующая батарея выбрана несколько раз.");
-    }
-    values.forEach((slot, index) => {
-      if (slot.mode === "existing" && !slot.battery_id) {
-        throw new Error(`Батарея #${index + 1}: выбери существующую батарею.`);
-      }
-      if ((slot.mode === "create" || slot.mode === "temporary") && !slot.type_id) {
-        throw new Error(`Батарея #${index + 1}: выбери тип батареи.`);
-      }
+  function updateSlot(i: number, patch: Partial<BatterySlot>) { setSlots((x) => x.map((s, idx) => idx === i ? { ...s, ...patch } : s)); }
+  function validateSlots() {
+    if (slots.length !== requiredBatteries) throw new Error(`Нужно ${requiredBatteries} батарей`);
+    const ids = slots.filter((s) => s.mode === "existing").map((s) => Number(s.battery_id));
+    if (new Set(ids).size !== ids.length) throw new Error("Одна батарея выбрана несколько раз");
+    slots.forEach((s, i) => {
+      if (s.mode === "existing" && !s.battery_id) throw new Error(`Слот ${i + 1}: выбери батарею`);
+      if (s.mode !== "existing" && !s.type_id) throw new Error(`Слот ${i + 1}: выбери тип`);
     });
   }
 
   async function createContract() {
-    if (!clientId) return showToast("Выбери клиента.");
-    if (!selectedPlan) return showToast("Тарифы не загрузились.");
-
+    if (!clientId || !selectedPlan) return showToast("Выбери клиента и тариф");
     try {
-      validateSlots(slots);
-      setBusy(true);
+      validateSlots(); setBusy(true);
       const result = await request<any>("/api/admin/rental-contracts", {
         method: "POST",
         body: JSON.stringify({
-          bike_id: bike.id,
-          client_id: Number(clientId),
-          plan_code: selectedPlan.code,
-          start_date: startDate,
-          batteries: slots,
-          charger_quantity: Number(chargerQuantity),
-          extra_battery_count: Number(extraCount),
-          initial_payment: {
-            amount: Number(initialPayment),
-            method: paymentMethod,
-          },
+          bike_id: bike.id, client_id: Number(clientId), plan_code: selectedPlan.code, start_date: startDate,
+          batteries: slots, charger_quantity: Number(chargerQuantity), extra_battery_count: Number(extraCount),
+          recurring_rent_override: customize ? Number(customRecurring) : null,
+          deposit_override: customize ? Number(customDeposit) : null,
+          first_period_rent_override: customize ? Number(customFirst) : null,
           notes: notes || null,
         }),
       });
-
-      const temporaryCount = slots.filter((s) => s.mode === "temporary").length;
-      showToast(
-        `Договор #${result?.rental?.id || "создан"} · батарей ${slots.length}` +
-          (temporaryCount ? ` · временных ${temporaryCount}` : ""),
-      );
+      showToast(`Договор #${result?.rental?.id || "создан"}. Оплата НЕ создавалась.`);
       await reload();
-    } catch (e: any) {
-      showToast(e.message || "Не удалось создать договор");
-    } finally {
-      setBusy(false);
-    }
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
+  }
+
+  async function saveEdit() {
+    if (!active?.id) return;
+    try {
+      setBusy(true);
+      await request("/api/admin/rental-contracts/edit", {
+        method: "POST",
+        body: JSON.stringify({
+          rental_id: active.id, client_id: Number(editClient), recurring_rent: Number(editRecurring), deposit: Number(editDeposit),
+          charger_quantity: Number(editChargers), billable_extra_batteries: Number(editBillableExtra), notes: editNotes || null,
+          move_financial_history: moveHistory,
+        }),
+      });
+      showToast("Условия договора изменены. Платёж не создавался."); setEditing(false); await reload(); await load();
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
+  }
+
+  async function transferBike() {
+    if (!active?.id || !Number(newBikeId)) return showToast("Укажи новый bike ID");
+    if (!confirm(`Пересадить rental #${active.id} с bike #${bike.id} на bike #${newBikeId}? Оплаты и месяц останутся прежними.`)) return;
+    try {
+      setBusy(true);
+      await request("/api/admin/rental-contracts/transfer", {
+        method: "POST",
+        body: JSON.stringify({ rental_id: active.id, new_bike_id: Number(newBikeId), keep_current_batteries: keepBatteries, notes: "transfer from Mini App" }),
+      });
+      showToast(`Пересадка на bike #${newBikeId} выполнена без нового платежа/начисления`); await reload();
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
+  }
+
+  async function removeBattery(id: number) {
+    if (!confirm(`Убрать батарею #${id} из active договора? Это не создаёт возврат/платёж.`)) return;
+    try {
+      setBusy(true);
+      await request("/api/admin/rental-contracts/equipment", { method: "DELETE", body: JSON.stringify({ rental_id: active.id, battery_id: id, notes: "removed from Mini App" }) });
+      showToast(`Батарея #${id} снята с договора`); await load(); await reload();
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
+  }
+
+  async function addBattery() {
+    try {
+      setBusy(true);
+      await request("/api/admin/rental-contracts/add-battery", {
+        method: "POST", body: JSON.stringify({ rental_id: active.id, battery: extraSlot, effective_date: localToday(), charge_now: extraChargeNow }),
+      });
+      showToast(extraChargeNow ? "Батарея добавлена и создано начисление" : "Батарея добавлена без текущей доплаты"); await load(); await reload();
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
   }
 
   async function closeContract() {
-    if (!active) return;
-    const oldDeposit = Number(active.deposit || 0);
-    const raw = prompt(
-      `Сколько депозита вернули клиенту?\nДепозит договора: ${money(oldDeposit)}`,
-      "0",
-    );
-    if (raw === null) return;
-    const refund = Number(String(raw).replace(",", "."));
-    if (!Number.isFinite(refund) || refund < 0) {
-      return showToast("Некорректная сумма возврата.");
-    }
-    if (!confirm(`Закрыть договор велика #${bike.id}?`)) return;
-
+    const refundRaw = prompt(`Сколько депозита реально вернули? Договор: ${money(active?.deposit)}`, "0");
+    if (refundRaw === null) return;
+    const refund = Number(refundRaw.replace(",", ".")); if (!Number.isFinite(refund) || refund < 0) return showToast("Некорректная сумма");
     try {
       setBusy(true);
-      await request("/api/admin/rentals/close", {
-        method: "POST",
-        body: JSON.stringify({
-          bike_id: bike.id,
-          end_date: localToday(),
-          bike_status: closeStatus,
-          deposit_refund: refund,
-          notes: "closed from tariff contract UI",
-        }),
-      });
-      showToast(refund ? `Договор закрыт, возвращено ${money(refund)}` : "Договор закрыт");
-      await reload();
-    } catch (e: any) {
-      showToast(e.message || "Не удалось закрыть договор");
-    } finally {
-      setBusy(false);
-    }
+      await request("/api/admin/rentals/close", { method: "POST", body: JSON.stringify({ bike_id: bike.id, end_date: localToday(), bike_status: closeStatus, deposit_refund: refund, notes: "closed from contract v2" }) });
+      showToast("Договор закрыт"); await reload();
+    } catch (e: any) { showToast(e.message); } finally { setBusy(false); }
   }
 
-  async function addExtraBattery() {
-    try {
-      if ((extraSlot.mode === "create" || extraSlot.mode === "temporary") && !extraSlot.type_id) {
-        return showToast("Выбери тип батареи.");
-      }
-      if (extraSlot.mode === "existing" && !extraSlot.battery_id) {
-        return showToast("Выбери существующую батарею.");
-      }
-      setBusy(true);
-      await request("/api/admin/rental-contracts/add-battery", {
-        method: "POST",
-        body: JSON.stringify({
-          rental_id: active.id,
-          battery: extraSlot,
-          effective_date: localToday(),
-          charge_now: extraChargeNow,
-        }),
-      });
-      showToast(
-        extraChargeNow
-          ? "Дополнительная батарея выдана, начисление создано"
-          : "Дополнительная батарея выдана, доплата начнётся со следующего периода",
-      );
-      await reload();
-      await load();
-    } catch (e: any) {
-      showToast(e.message || "Не удалось добавить батарею");
-    } finally {
-      setBusy(false);
-    }
+  function BatterySlotEditor({ slot, index, onChange }: { slot: BatterySlot; index?: number; onChange: (p: Partial<BatterySlot>) => void }) {
+    return <div className="item"><div className="space"><b>{index == null ? "Новая батарея" : `Батарея ${index + 1}`}</b><span className="pill">{slot.mode}</span></div>
+      <select className="select" value={slot.mode} onChange={(e) => onChange({ mode: e.target.value as BatteryMode, battery_id: undefined, type_id: options.battery_types[0]?.id })}>
+        <option value="existing">из базы</option><option value="temporary">временная / не проиндексирована</option><option value="create">создать индексированную</option>
+      </select>
+      {slot.mode === "existing" ? <select className="select" value={slot.battery_id || ""} onChange={(e) => onChange({ battery_id: Number(e.target.value) })}><option value="">выбери</option>{options.available_batteries.map((b) => <option key={b.id} value={b.id}>{batteryLabel(b)}</option>)}</select>
+      : <select className="select" value={slot.type_id || ""} onChange={(e) => onChange({ type_id: Number(e.target.value) })}><option value="">тип</option>{options.battery_types.map((t) => <option key={t.id} value={t.id}>{typeLabel(t)}</option>)}</select>}
+    </div>;
   }
 
-  if (loading) {
-    return <div className="card">Загрузка тарифов и батарей...</div>;
-  }
+  if (loading) return <div className="card">Загрузка договора...</div>;
 
-  if (active) {
-    const snapshot = active.contract_terms_snapshot || {};
-    const isTariff = Boolean(active.plan_code || snapshot.plan_code);
-
-    return (
-      <div className="card">
-        <div className="space">
-          <h3 className="section-title">📄 Активный договор</h3>
-          <span className={`pill ${isTariff ? "ok" : "warn"}`}>
-            {isTariff ? active.plan_name || snapshot.plan_name || "тарифный" : "старый договор"}
-          </span>
-        </div>
-
-        <div className="kv">
-          <div>Клиент</div>
-          <div>#{active.client_id} {active.client_name || ""}</div>
-          <div>Начало</div>
-          <div>{active.start_date}</div>
-          <div>Минимум до</div>
-          <div>{active.minimum_end_date || "не задано"}</div>
-          <div>Регулярная сумма</div>
-          <div><b>{money(active.recurring_rent || active.price)}</b></div>
-          <div>Депозит</div>
-          <div>{money(active.deposit)}</div>
-          <div>Батареи по договору</div>
-          <div>
-            {Number(active.included_batteries || 0) + Number(active.extra_batteries || 0) || "старый учёт"}
-          </div>
-          <div>Доп. батареи</div>
-          <div>{Number(active.extra_batteries || 0)}</div>
-          <div>Зарядки</div>
-          <div>{active.charger_quantity || 0}</div>
-        </div>
-
-        {isTariff && (
-          <>
-            <hr className="hr" />
-            <h4>🔋 Добавить дополнительную батарею</h4>
-            <BatterySlotEditor
-              slot={extraSlot}
-              index={0}
-              options={options}
-              onChange={(patch) => setExtraSlot((x) => ({ ...x, ...patch }))}
-              single
-            />
-            <label className="row small" style={{ marginTop: 10 }}>
-              <input
-                type="checkbox"
-                checked={extraChargeNow}
-                onChange={(e) => setExtraChargeNow(e.target.checked)}
-              />
-              начислить {money(1500)} сейчас за начатый период
-            </label>
-            <button
-              className="btn primary"
-              disabled={busy}
-              onClick={addExtraBattery}
-              style={{ marginTop: 10 }}
-            >
-              {busy ? "Сохраняю..." : "Выдать дополнительную батарею"}
-            </button>
-          </>
-        )}
-
-        <hr className="hr" />
-        <div className="formgrid">
-          <label>
-            Статус велика после закрытия
-            <select
-              className="select"
-              value={closeStatus}
-              onChange={(e) => setCloseStatus(e.target.value)}
-            >
-              <option value="free">Свободен</option>
-              <option value="repair">В ремонт</option>
-              <option value="waiting">Ожидает проверки</option>
-              <option value="sold">Продан</option>
-            </select>
-          </label>
-        </div>
-        <button className="btn danger" disabled={busy} onClick={closeContract}>
-          Закрыть договор
-        </button>
-
-        {!isTariff && (
-          <p className="small muted" style={{ marginTop: 10 }}>
-            Это старый договор. Админское правило оплаты ниже продолжает работать.
-            Чтобы перейти на новый тариф, закрой этот договор и создай новый.
-          </p>
-        )}
+  if (!active) return (
+    <div className="card">
+      <h3>📄 Новый договор v2</h3>
+      <div className="notice"><b>Важно:</b> создание договора создаёт только условия и начисления. <b>client_payment не создаётся.</b> Деньги записываются отдельно через бот, код оплаты или ручную оплату.</div>
+      <div className="formgrid">
+        <label>Клиент<select className="select" value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">выбери</option>{options.clients.map((c) => <option key={c.id} value={c.id}>#{c.id} {c.name}</option>)}</select></label>
+        <label>Тариф<select className="select" value={planCode} onChange={(e) => setPlanCode(e.target.value)}>{plans.map((p) => <option key={p.code} value={p.code}>{p.name} · {money(modelValue(p,"recurring_rent"))}/мес</option>)}</select></label>
+        <label>Дата начала<input className="input" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
+        <label>Доп. батарей по тарифу<input className="input" type="number" min={0} max={8} value={extraCount} onChange={(e) => setExtraCount(Math.max(0, Number(e.target.value)))} /></label>
+        <label>Зарядки<input className="input" type="number" min={0} max={10} value={chargerQuantity} onChange={(e) => setChargerQuantity(Number(e.target.value))} /></label>
       </div>
-    );
-  }
-
-  if (!selectedPlan) {
-    return (
-      <div className="card dangerText">
-        Тарифы не найдены. Сначала выполни SQL-миграцию rental plans.
-      </div>
-    );
-  }
-
-  const client = options.clients.find((c) => c.id === Number(clientId));
-  const steps = [...(selectedPlan.rental_plan_steps || [])].sort(
-    (a, b) => a.step_number - b.step_number,
+      {selectedPlan?.model_price_override && <div className="notice small">Для модели <b>{bike.model}</b> применён model-specific прайс.</div>}
+      <label className="row small"><input type="checkbox" checked={customize} onChange={(e) => setCustomize(e.target.checked)} /> Индивидуальные условия</label>
+      {customize && <div className="formgrid">
+        <label>Первый период<input className="input" type="number" value={customFirst} onChange={(e) => setCustomFirst(e.target.value)} /></label>
+        <label>Далее / месяц<input className="input" type="number" value={customRecurring} onChange={(e) => setCustomRecurring(e.target.value)} /></label>
+        <label>Залог по договору<input className="input" type="number" value={customDeposit} onChange={(e) => setCustomDeposit(e.target.value)} /></label>
+      </div>}
+      <h4>Фактически выданные батареи ({slots.length})</h4>
+      <div className="list">{slots.map((s, i) => <BatterySlotEditor key={i} slot={s} index={i} onChange={(p) => updateSlot(i,p)} />)}</div>
+      <label>Заметка<textarea className="textarea" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+      <button className="btn primary" disabled={busy || !clientId} onClick={createContract}>{busy ? "Создаю..." : "Создать договор БЕЗ оплаты"}</button>
+    </div>
   );
+
+  const actualAssigned = equipment.length;
+  const includedCount = Number(active.included_batteries || active.contract_terms_snapshot?.included_batteries || 0);
 
   return (
     <div className="card">
-      <div className="space">
-        <h3 className="section-title">📄 Новый договор аренды</h3>
-        <span className="pill ok">тарифный мастер</span>
+      <div className="space"><h3>📄 Active договор #{active.id}</h3><span className="pill ok">{active.plan_name || active.plan_code || "legacy"}</span></div>
+      <div className="kv">
+        <div>Клиент</div><div>#{active.client_id} {active.client_name || ""}</div>
+        <div>Велик</div><div>#{bike.id} {bike.model || ""}</div>
+        <div>Регулярно</div><div><b>{money(active.recurring_rent || active.price)}</b></div>
+        <div>Залог по условию</div><div>{money(active.deposit)}</div>
+        <div>Батарей включено тарифом</div><div>{includedCount || "не задано"}</div>
+        <div>Фактически выдано</div><div><b>{actualAssigned}</b>{includedCount && actualAssigned !== includedCount ? <span className="pill warn" style={{ marginLeft: 6 }}>не совпадает</span> : null}</div>
+        <div>Платных доп. батарей</div><div>{Number(active.extra_batteries || 0)}</div>
       </div>
 
-      <div className="formgrid">
-        <label>
-          Клиент
-          <select
-            className="select"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-          >
-            <option value="">Выбери клиента</option>
-            {options.clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                #{c.id} {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Дата начала
-          <input
-            className="input"
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-          />
-        </label>
-      </div>
-
-      <h4 style={{ marginBottom: 8 }}>Тариф</h4>
-      <div className="list">
-        {plans.map((plan) => {
-          const selected = plan.code === selectedPlan.code;
-          return (
-            <button
-              type="button"
-              key={plan.code}
-              className={`item ${selected ? "active ok" : ""}`}
-              onClick={() => {
-                setPlanCode(plan.code);
-                setExtraCount(0);
-              }}
-            >
-              <div className="space">
-                <b>{selected ? "●" : "○"} {plan.name}</b>
-                <span className="money">{money(plan.first_period_rent)}</span>
-              </div>
-              <div className="small muted">
-                {plan.description} · {plan.included_batteries} АКБ · залог {money(plan.deposit_amount)}
-              </div>
-              <div className="small muted">
-                Со второго периода: {money(plan.recurring_rent)}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+      <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={() => setEditing(!editing)}>✏️ Изменить условия</button></div>
+      {editing && <div className="item" style={{ marginTop: 10 }}>
+        <div className="formgrid">
+          <label>Клиент<select className="select" value={editClient} onChange={(e) => setEditClient(e.target.value)}>{options.clients.map((c) => <option key={c.id} value={c.id}>#{c.id} {c.name}</option>)}</select></label>
+          <label>Цена / месяц<input className="input" type="number" value={editRecurring} onChange={(e) => setEditRecurring(e.target.value)} /></label>
+          <label>Залог<input className="input" type="number" value={editDeposit} onChange={(e) => setEditDeposit(e.target.value)} /></label>
+          <label>Зарядки<input className="input" type="number" value={editChargers} onChange={(e) => setEditChargers(e.target.value)} /></label>
+          <label>Платных доп. батарей<input className="input" type="number" value={editBillableExtra} onChange={(e) => setEditBillableExtra(e.target.value)} /></label>
+        </div>
+        <label>Заметка<textarea className="textarea" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} /></label>
+        {Number(editClient) !== Number(active.client_id) && <label className="row small"><input type="checkbox" checked={moveHistory} onChange={(e) => setMoveHistory(e.target.checked)} /> Это исправление клиента: перенести charges/payments этого rental на нового клиента</label>}
+        <button className="btn primary" disabled={busy} onClick={saveEdit}>Сохранить без создания оплаты</button>
+      </div>}
 
       <hr className="hr" />
-
-      <div className="formgrid">
-        <label>
-          Дополнительные батареи
-          <input
-            className="input"
-            type="number"
-            min={0}
-            max={5}
-            value={extraCount}
-            onChange={(e) => setExtraCount(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
-          />
-          <span className="small muted">
-            +{money(selectedPlan.extra_battery_monthly_fee)} за каждую
-          </span>
-        </label>
-
-        <label>
-          Количество зарядок
-          <input
-            className="input"
-            type="number"
-            min={0}
-            max={10}
-            value={chargerQuantity}
-            onChange={(e) => setChargerQuantity(Number(e.target.value) || 0)}
-          />
-        </label>
-      </div>
-
-      <h4>🔋 Батареи: {requiredBatteries}</h4>
-      <p className="small muted">
-        Можно выбрать существующую, создать полностью индексированную или временную
-        батарею. Временная получит код TMP-BAT и не блокирует создание договора.
-      </p>
-
-      {slots.map((slot, index) => (
-        <BatterySlotEditor
-          key={index}
-          slot={slot}
-          index={index}
-          options={options}
-          onChange={(patch) => updateSlot(index, patch)}
-        />
-      ))}
+      <h4>🔄 Пересадка без нового месяца</h4>
+      <p className="small muted">Меняет bike_id внутри этого же rental. Уже оплаченный период, депозит и история сохраняются. Новая оплата/начисление не создаются.</p>
+      <div className="row"><input className="input" style={{ maxWidth: 180 }} inputMode="numeric" placeholder="новый bike ID" value={newBikeId} onChange={(e) => setNewBikeId(e.target.value.replace(/\D/g,""))} /><label className="row small"><input type="checkbox" checked={keepBatteries} onChange={(e) => setKeepBatteries(e.target.checked)} /> оставить текущие батареи клиенту</label><button className="btn warn" disabled={busy || !newBikeId} onClick={transferBike}>Пересадить</button></div>
 
       <hr className="hr" />
+      <h4>🔋 Фактическая комплектация</h4>
+      <div className="list">{equipment.map((r: any) => { const b = r.batteries || {}; return <div className="item" key={r.id}><div className="space"><b>{b.inventory_code || `battery #${r.battery_id}`}</b><button className="btn danger" disabled={busy} onClick={() => removeBattery(r.battery_id)}>Убрать</button></div><div className="small muted">DB #{r.battery_id} · {b.indexing_status || "-"}</div></div>; })}{!equipment.length && <p className="muted">Нет active battery_rentals.</p>}</div>
+      <BatterySlotEditor slot={extraSlot} onChange={(p) => setExtraSlot((s) => ({...s,...p}))} />
+      <label className="row small"><input type="checkbox" checked={extraChargeNow} onChange={(e) => setExtraChargeNow(e.target.checked)} /> создать начисление за доп. батарею сейчас</label>
+      <button className="btn" disabled={busy} onClick={addBattery}>➕ Добавить батарею</button>
 
-      <div className="formgrid">
-        <label>
-          Получено сейчас
-          <input
-            className="input"
-            type="number"
-            min={0}
-            value={initialPayment}
-            onChange={(e) => setInitialPayment(Number(e.target.value) || 0)}
-          />
-          <span className="small muted">По графику сегодня: {money(firstDueNow)}</span>
-        </label>
-
-        <label>
-          Метод оплаты
-          <select
-            className="select"
-            value={paymentMethod}
-            onChange={(e) => setPaymentMethod(e.target.value)}
-          >
-            <option value="cash">Наличные</option>
-            <option value="bank">Банк</option>
-            <option value="card">Карта</option>
-            <option value="manual">Ручной ввод</option>
-          </select>
-        </label>
-      </div>
-
-      <label>
-        Заметка
-        <textarea
-          className="textarea"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Особые условия, состояние комплекта, договорённости"
-        />
-      </label>
-
-      <div className="item" style={{ marginTop: 12 }}>
-        <h4 style={{ marginTop: 0 }}>Предпросмотр</h4>
-        <div className="kv">
-          <div>Клиент</div>
-          <div>{client ? `#${client.id} ${client.name}` : "не выбран"}</div>
-          <div>Велосипед</div>
-          <div>#{bike.id} {bike.brand || ""} {bike.model || ""}</div>
-          <div>Тариф</div>
-          <div>{selectedPlan.name}</div>
-          <div>Минимум до</div>
-          <div>{addMonths(startDate, selectedPlan.minimum_months)}</div>
-          <div>АКБ</div>
-          <div>{requiredBatteries}, из них временных {slots.filter((s) => s.mode === "temporary").length}</div>
-          <div>К оплате сейчас по графику</div>
-          <div><b>{money(firstDueNow)}</b></div>
-          <div>Фактически получено</div>
-          <div>{money(initialPayment)}</div>
-          <div>Регулярно со следующего периода</div>
-          <div><b>{money(recurringTotal)}</b></div>
-        </div>
-
-        <h5>Первый график</h5>
-        <div className="list">
-          {steps.map((step) => (
-            <div className="item" key={step.id}>
-              <div className="space">
-                <span>{addDays(startDate, step.offset_days)} · {step.label}</span>
-                <b>{money(step.amount)}</b>
-              </div>
-            </div>
-          ))}
-          {extraCount > 0 && (
-            <div className="item">
-              <div className="space">
-                <span>{startDate} · дополнительные батареи × {extraCount}</span>
-                <b>{money(extraCount * selectedPlan.extra_battery_monthly_fee)}</b>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <button
-        className="btn ok"
-        disabled={busy || !clientId}
-        onClick={createContract}
-        style={{ marginTop: 12 }}
-      >
-        {busy ? "Создаю договор..." : "✅ Создать договор и начисления"}
-      </button>
-
-      <p className="small muted">
-        Правило оплаты остаётся ниже только для администратора как расширенный ручной
-        инструмент. Клиент больше не может менять или запрашивать его через Mini App.
-      </p>
-    </div>
-  );
-}
-
-function BatterySlotEditor({
-  slot,
-  index,
-  options,
-  onChange,
-  single = false,
-}: {
-  slot: BatterySlot;
-  index: number;
-  options: OptionsPayload;
-  onChange: (patch: Partial<BatterySlot>) => void;
-  single?: boolean;
-}) {
-  const usedMode = slot.mode || "temporary";
-
-  return (
-    <div className="item" style={{ marginBottom: 10 }}>
-      <div className="space">
-        <b>{single ? "Дополнительная батарея" : `Батарея ${index + 1}`}</b>
-        <span className={`pill ${usedMode === "temporary" ? "warn" : "ok"}`}>
-          {usedMode === "existing"
-            ? "из базы"
-            : usedMode === "create"
-              ? "создать"
-              : "временно"}
-        </span>
-      </div>
-
-      <div className="formgrid">
-        <label>
-          Способ
-          <select
-            className="select"
-            value={usedMode}
-            onChange={(e) => {
-              const mode = e.target.value as BatteryMode;
-              if (mode === "existing") {
-                onChange({
-                  mode,
-                  battery_id: options.available_batteries[0]?.id,
-                  type_id: undefined,
-                });
-              } else {
-                onChange({
-                  mode,
-                  battery_id: undefined,
-                  type_id: options.battery_types[0]?.id,
-                });
-              }
-            }}
-          >
-            <option value="existing">Выбрать существующую</option>
-            <option value="create">Создать индексированную</option>
-            <option value="temporary">Создать временную</option>
-          </select>
-        </label>
-
-        {usedMode === "existing" ? (
-          <label>
-            Батарея
-            <select
-              className="select"
-              value={slot.battery_id || ""}
-              onChange={(e) => onChange({ battery_id: Number(e.target.value) })}
-            >
-              <option value="">Выбери батарею</option>
-              {options.available_batteries.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {batteryLabel(b)}
-                </option>
-              ))}
-            </select>
-            {!options.available_batteries.length && (
-              <span className="small dangerText">
-                Свободных батарей в базе нет — выбери временное создание.
-              </span>
-            )}
-          </label>
-        ) : (
-          <label>
-            Тип батареи
-            <select
-              className="select"
-              value={slot.type_id || ""}
-              onChange={(e) => onChange({ type_id: Number(e.target.value) })}
-            >
-              <option value="">Выбери тип</option>
-              {options.battery_types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {typeLabel(t)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
-
-      {usedMode !== "existing" && (
-        <label>
-          Короткая заметка
-          <input
-            className="input"
-            value={slot.note || ""}
-            onChange={(e) => onChange({ note: e.target.value })}
-            placeholder={
-              usedMode === "temporary"
-                ? "например: чёрная без наклейки"
-                : "например: новая батарея со склада"
-            }
-          />
-        </label>
-      )}
+      <hr className="hr" />
+      <div className="row"><select className="select" style={{maxWidth:180}} value={closeStatus} onChange={(e) => setCloseStatus(e.target.value)}><option value="free">free</option><option value="repair">repair</option><option value="waiting">waiting</option><option value="sold">sold</option></select><button className="btn danger" disabled={busy} onClick={closeContract}>Закрыть договор</button></div>
+      <p className="small muted">Условия договора и реальные деньги разделены. Любая оплата должна прийти отдельным payment-flow: бот, код оплаты, Fio или ручное подтверждение.</p>
     </div>
   );
 }

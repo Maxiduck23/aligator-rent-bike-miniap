@@ -12,24 +12,35 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
     const [bike, rentals, charges, rules, batteries] = await Promise.all([
       supabaseAdmin.from('miniapp_bike_cards').select('*').eq('id', bikeId).single(),
-      supabaseAdmin.from('miniapp_active_rentals').select('*').eq('bike_id', bikeId),
+      // Direct rentals table is intentional: legacy miniapp_active_rentals views may not
+      // expose v2 fields such as plan_code/recurring_rent/contract_terms_snapshot.
+      supabaseAdmin
+        .from('rentals')
+        .select('*, clients(id,name,phone,telegram_id)')
+        .eq('bike_id', bikeId)
+        .eq('status', 'active')
+        .order('id', { ascending: false }),
       supabaseAdmin.from('miniapp_debt_items').select('*').eq('bike_id', bikeId).order('due_date'),
       supabaseAdmin.from('miniapp_payment_rules').select('*').eq('bike_id', bikeId).order('id', { ascending: false }),
-      supabaseAdmin.from('miniapp_batteries').select('*').eq('bike_id', bikeId).order('id')
+      supabaseAdmin.from('miniapp_batteries').select('*').eq('bike_id', bikeId).order('id'),
     ]);
 
-    if (bike.error) throw bike.error;
-    if (rentals.error) throw rentals.error;
-    if (charges.error) throw charges.error;
-    if (rules.error) throw rules.error;
-    if (batteries.error) throw batteries.error;
+    for (const r of [bike, rentals, charges, rules, batteries]) if (r.error) throw r.error;
+
+    const activeRentals = (rentals.data || []).map((r: any) => ({
+      ...r,
+      client_name: r.clients?.name || null,
+      client_phone: r.clients?.phone || null,
+      client_telegram_id: r.clients?.telegram_id || null,
+      clients: undefined,
+    }));
 
     return ok({
       bike: bike.data,
-      active_rentals: rentals.data || [],
+      active_rentals: activeRentals,
       charges: charges.data || [],
       payment_rules: rules.data || [],
-      batteries: batteries.data || []
+      batteries: batteries.data || [],
     });
   } catch (e) {
     return fail(e);

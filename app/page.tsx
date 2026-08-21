@@ -1,6 +1,7 @@
 "use client";
 
 import RentalContractForm from "@/components/rentals/RentalContractForm";
+import FinanceRangePanel from "@/components/finance/FinanceRangePanel";
 import { useEffect, useMemo, useState } from "react";
 
 declare global {
@@ -127,6 +128,8 @@ type Payment = {
   payment_date: string;
   method?: string | null;
   notes?: string | null;
+  verification_status?: string | null;
+  verification_source?: string | null;
 };
 
 type BikeContext = {
@@ -1168,12 +1171,15 @@ function BikeContextPanel({
           </div>
           <div>Правила оплаты</div>
           <div>
-            {ctx.payment_rules.length ? (
-              ctx.payment_rules
-                .map((r) => `#${r.id} ${r.is_active ? "active" : "off"}`)
-                .join(", ")
+            {ctx.payment_rules.some((r) => r.is_active) ? (
+              <>
+                {ctx.payment_rules.filter((r) => r.is_active).map((r) => `#${r.id} active`).join(", ")}
+                {ctx.payment_rules.filter((r) => !r.is_active).length > 0 && (
+                  <div className="small muted">История скрыта: {ctx.payment_rules.filter((r) => !r.is_active).length} старых правил</div>
+                )}
+              </>
             ) : (
-              <span className="warnText">нет</span>
+              <span className="warnText">нет active правила</span>
             )}
           </div>
         </div>
@@ -1434,8 +1440,6 @@ function PaymentRuleBlock({
   const [parts, setParts] = useState<Part[]>([
     { due_day: minDueDayForMonth(currentMonth()), amount: Number(active?.price || bike.active_price || 6000) },
   ]);
-  const [allowClientEdit, setAllowClientEdit] = useState(true);
-  const [requiresApproval, setRequiresApproval] = useState(true);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<"save" | "generate" | "both" | null>(null);
   const planValidation = validatePaymentPlan(month, parts, monthly);
@@ -1461,8 +1465,8 @@ function PaymentRuleBlock({
         monthly_amount: monthly,
         parts,
         month,
-        allow_client_edit: allowClientEdit,
-        requires_admin_approval: requiresApproval,
+        allow_client_edit: false,
+        requires_admin_approval: true,
         note: note || "created from Mini App",
       }),
     });
@@ -1583,24 +1587,6 @@ function PaymentRuleBlock({
           placeholder="например: клиент уже оплатил 4000, остаток переносим"
         />
       </label>
-      <div className="row" style={{ marginTop: 10 }}>
-        <label className="row small">
-          <input
-            type="checkbox"
-            checked={allowClientEdit}
-            onChange={(e) => setAllowClientEdit(e.target.checked)}
-          />{" "}
-          клиент может запросить изменение
-        </label>
-        <label className="row small">
-          <input
-            type="checkbox"
-            checked={requiresApproval}
-            onChange={(e) => setRequiresApproval(e.target.checked)}
-          />{" "}
-          только после подтверждения админа
-        </label>
-      </div>
       <div className="row" style={{ marginTop: 10 }}>
         <button
           className="btn primary"
@@ -2197,8 +2183,7 @@ function LedgerPanel({
               <th>ID</th>
               <th>Дата</th>
               <th>Сумма</th>
-              <th>Метод</th>
-              <th>Заметка</th>
+              <th>Метод</th><th>Проверка</th><th>Заметка</th>
             </tr>
           </thead>
           <tbody>
@@ -2207,8 +2192,7 @@ function LedgerPanel({
                 <td>#{p.id}</td>
                 <td>{p.payment_date}</td>
                 <td>{money(p.amount)}</td>
-                <td>{p.method}</td>
-                <td>{p.notes}</td>
+                <td>{p.method}</td><td><span className={`pill ${p.verification_status === "verified" ? "ok" : p.verification_status === "reversed" || p.verification_status === "rejected" ? "danger" : "warn"}`}>{p.verification_status || "legacy"}</span><div className="small muted">{p.verification_source || ""}</div></td><td>{p.notes}</td>
               </tr>
             ))}
           </tbody>
@@ -2331,8 +2315,7 @@ function ManualPaymentBlock({
             value={method}
             onChange={(e) => setMethod(e.target.value)}
           >
-            <option value="cash">cash</option>
-            <option value="bank">bank</option>
+            <option value="cash">cash</option><option value="card">card / POS</option><option value="bank">bank</option>
             <option value="revolut">revolut</option>
             <option value="other">other</option>
           </select>
@@ -2575,8 +2558,7 @@ function QuickPaymentBlock({
             Метод
             <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
               <option value="manual_chat">manual_chat</option>
-              <option value="cash">cash</option>
-              <option value="bank">bank</option>
+              <option value="cash">cash</option><option value="card">card / POS</option><option value="bank">bank</option>
               <option value="revolut">revolut</option>
               <option value="other">other</option>
             </select>
@@ -2858,113 +2840,7 @@ function AssetOperationsBlock({ showToast, reload }: { showToast: (s: string) =>
 }
 
 function FinanceLogTab({ showToast }: { showToast: (s: string) => void }) {
-  const [days, setDays] = useState(1);
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function load(nextDays = days) {
-    setLoading(true);
-    try {
-      const payload = await api<any>(`/api/admin/bot-finance?days=${nextDays}`);
-      setData(payload);
-    } catch (e: any) {
-      showToast(e.message || "Не получилось загрузить стату");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load().catch((e) => showToast(e.message));
-  }, []);
-
-  const totals = data?.totals || { income: 0, expense: 0, debt_created: 0, count: 0 };
-  const profit = Number(totals.income || 0) - Number(totals.expense || 0);
-
-  return (
-    <div className="grid">
-      <div className="card">
-        <h3>📊 Стата из быстрых сообщений бота</h3>
-        <p className="muted">
-          Сюда попадают сообщения формата <span className="code">+ 50 сервис тест</span>, <span className="code">- 500 еда</span>, <span className="code">+ 3000 аренда вел 24</span>.
-          Аренда с номером велика дополнительно создаёт оплату клиента, сервис пока только пишется в журнал.
-        </p>
-        <div className="row">
-          {[1, 7, 30].map((d) => (
-            <button
-              key={d}
-              className={`btn ${days === d ? "primary" : ""}`}
-              onClick={() => {
-                setDays(d);
-                load(d);
-              }}
-            >
-              {d === 1 ? "Сегодня" : `${d} дней`}
-            </button>
-          ))}
-          <button className="btn" onClick={() => load()} disabled={loading}>
-            {loading ? "Загрузка..." : "Обновить"}
-          </button>
-        </div>
-        <hr className="hr" />
-        <div className="kpi-grid">
-          <div className="kpi"><div>Реальный доход</div><b>{money(totals.income)}</b></div>
-          <div className="kpi"><div>Реальный расход</div><b>{money(totals.expense)}</b></div>
-          <div className="kpi"><div>Денежный итог</div><b>{money(profit)}</b></div>
-          <div className="kpi"><div>Создано долгов</div><b>{money(totals.debt_created)}</b></div>
-          <div className="kpi"><div>Записей</div><b>{totals.count || 0}</b></div>
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>По категориям</h3>
-        <div className="list">
-          {(data?.by_category || []).map((r: any, idx: number) => (
-            <div className="item" key={`${r.sign}-${r.category}-${idx}`}>
-              <div className="space">
-                <b>{r.kind === "debt_created" ? "📌 долг" : r.sign === "income" ? "🟢 +" : "🔴 -"} {r.category_label || r.category}</b>
-                <span className="pill">{r.count}</span>
-              </div>
-              <div>{money(r.total)}</div>
-            </div>
-          ))}
-          {data && !data.by_category?.length && <p className="muted">Пока записей нет.</p>}
-        </div>
-      </div>
-
-      <div className="card wide">
-        <h3>Последние записи</h3>
-        <div className="tableWrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Дата</th>
-                <th>Тип</th>
-                <th>Сумма</th>
-                <th>Категория</th>
-                <th>Велик</th>
-                <th>Клиент</th>
-                <th>Текст</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.recent || []).map((r: any) => (
-                <tr key={r.id}>
-                  <td>{r.event_date || "-"}</td>
-                  <td>{r.stats_kind === "debt_created" ? "📌 долг" : r.sign === "income" ? "🟢 +" : "🔴 -"}</td>
-                  <td>{money(r.amount)}</td>
-                  <td>{r.category_label || r.category}</td>
-                  <td>{r.bike_id ? `#${r.bike_id}` : "-"}</td>
-                  <td>{r.client_id ? `#${r.client_id}` : "-"}</td>
-                  <td className="small">{r.line_text || r.raw_text}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
+  return <FinanceRangePanel showToast={showToast} />;
 }
 
 
@@ -3925,8 +3801,7 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
             <tr>
               <th>Дата</th>
               <th>Сумма</th>
-              <th>Метод</th>
-              <th>Заметка</th>
+              <th>Метод</th><th>Проверка</th><th>Заметка</th>
             </tr>
           </thead>
           <tbody>
@@ -3934,8 +3809,7 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
               <tr key={p.id}>
                 <td>{p.payment_date}</td>
                 <td>{money(p.amount)}</td>
-                <td>{p.method}</td>
-                <td>{p.notes}</td>
+                <td>{p.method}</td><td><span className={`pill ${p.verification_status === "verified" ? "ok" : p.verification_status === "reversed" || p.verification_status === "rejected" ? "danger" : "warn"}`}>{p.verification_status || "legacy"}</span><div className="small muted">{p.verification_source || ""}</div></td><td>{p.notes}</td>
               </tr>
             ))}
           </tbody>

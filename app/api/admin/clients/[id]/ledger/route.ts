@@ -8,6 +8,11 @@ function monthKey(value: string | null | undefined) {
   return /^\d{4}-\d{2}$/.test(s) ? s : new Date().toISOString().slice(0, 7);
 }
 
+function paymentCountsAsReal(p: any) {
+  const status = String(p?.verification_status || 'verified');
+  return status === 'verified';
+}
+
 function computeFinanceStats(charges: any[], payments: any[]) {
   const months = new Map<string, any>();
   function row(key: string) {
@@ -31,6 +36,7 @@ function computeFinanceStats(charges: any[], payments: any[]) {
     all.charges_count += 1;
   }
   for (const p of payments || []) {
+    if (!paymentCountsAsReal(p)) continue;
     const amount = Number(p.amount || 0);
     const key = monthKey(p.payment_date || p.created_at);
     const r = row(key);
@@ -67,12 +73,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       supabaseAdmin.from('client_charges').select('*').eq('client_id', clientId).order('due_date', { ascending: false }).limit(1000),
       supabaseAdmin.from('client_payments').select('*').eq('client_id', clientId).order('payment_date', { ascending: false }).limit(1000),
       supabaseAdmin.from('miniapp_payment_allocations_view').select('*').eq('client_id', clientId).order('created_at', { ascending: false }).limit(200),
-      supabaseAdmin.from('miniapp_payment_rules').select('*').eq('client_id', clientId).order('id', { ascending: false }).limit(20),
+      supabaseAdmin.from('miniapp_payment_rules').select('*').eq('client_id', clientId).eq('is_active', true).order('id', { ascending: false }).limit(20),
     ]);
 
-    for (const r of [clientRes, summaryRes, categoryRes, chargesRes, allChargesRes, paymentsRes, allocationsRes, rulesRes]) {
-      if (r.error) throw r.error;
-    }
+    for (const r of [clientRes, summaryRes, categoryRes, chargesRes, allChargesRes, paymentsRes, allocationsRes, rulesRes]) if (r.error) throw r.error;
 
     return ok({
       client: clientRes.data,
