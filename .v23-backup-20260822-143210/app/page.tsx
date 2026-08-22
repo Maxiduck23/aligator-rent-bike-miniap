@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import RentalContractForm from "@/components/rentals/RentalContractForm";
 import FinanceRangePanel from "@/components/finance/FinanceRangePanel";
@@ -6,9 +6,6 @@ import OperationsDashboardV22 from "@/components/operations/OperationsDashboardV
 import BatteryOverviewV22 from "@/components/operations/BatteryOverviewV22";
 import RequestsBoardV22 from "@/components/operations/RequestsBoardV22";
 import ClientActionsV22 from "@/components/client/ClientActionsV22";
-import FleetCenterV23 from "@/components/fleet/FleetCenterV23";
-import BatteryMapV23 from "@/components/fleet/BatteryMapV23";
-import ClientCenterV23 from "@/components/clients/ClientCenterV23";
 import { useEffect, useMemo, useState } from "react";
 
 declare global {
@@ -635,8 +632,6 @@ export default function Page() {
 
 function AdminApp({ showToast }: { showToast: (s: string) => void }) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
-  const [focusClientId, setFocusClientId] = useState<number | null>(null);
-  const [focusBikeId, setFocusBikeId] = useState<number | null>(null);
   return (
     <>
       <div className="tabs">
@@ -698,8 +693,8 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
         </button>
       </div>
       {tab === "dashboard" && <OperationsDashboardV22 showToast={showToast} />}
-      {tab === "batteries" && <BatteryMapV23 showToast={showToast} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
-      {tab === "bikes" && <FleetCenterV23 showToast={showToast} initialBikeId={focusBikeId} onOpenClient={(id) => { setFocusClientId(id); setTab("clients"); }} />}
+      {tab === "batteries" && <BatteryOverviewV22 showToast={showToast} />}
+      {tab === "bikes" && <BikesTab showToast={showToast} />}
       {tab === "assets" && <AssetsTab showToast={showToast} />}
       {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
@@ -707,7 +702,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       {tab === "debts" && <DebtsTab showToast={showToast} />}
       {tab === "requests" && <RequestsBoardV22 showToast={showToast} />}
       {tab === "exceptions" && <ExceptionsTab />}
-      {tab === "clients" && <ClientCenterV23 showToast={showToast} initialClientId={focusClientId} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
+      {tab === "clients" && <ClientsTab showToast={showToast} />}
     </>
   );
 }
@@ -3965,4 +3960,3 @@ function ClientRuleRequestBlock({
     </div>
   );
 }
-

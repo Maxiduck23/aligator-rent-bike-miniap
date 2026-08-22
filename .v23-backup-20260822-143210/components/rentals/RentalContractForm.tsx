@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 
@@ -43,13 +43,13 @@ export default function RentalContractForm({ bike, active, showToast, reload }: 
 
   // Active edit
   const [editing, setEditing] = useState(false);
-  // v2.3: active.client_id is read-only in the editor.
+  const [editClient, setEditClient] = useState("");
   const [editRecurring, setEditRecurring] = useState("");
   const [editDeposit, setEditDeposit] = useState("");
   const [editChargers, setEditChargers] = useState("");
   const [editBillableExtra, setEditBillableExtra] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  // v2.3: rental client owner is immutable.
+  const [moveHistory, setMoveHistory] = useState(false);
   const [newBikeId, setNewBikeId] = useState("");
   const [keepBatteries, setKeepBatteries] = useState(true);
   const [closeStatus, setCloseStatus] = useState("free");
@@ -118,7 +118,7 @@ export default function RentalContractForm({ bike, active, showToast, reload }: 
 
   useEffect(() => {
     if (!active) return;
-
+    setEditClient(String(active.client_id || ""));
     setEditRecurring(String(active.recurring_rent ?? active.price ?? ""));
     setEditDeposit(String(active.deposit ?? 0));
     setEditChargers(String(active.charger_quantity ?? 1));
@@ -164,9 +164,9 @@ export default function RentalContractForm({ bike, active, showToast, reload }: 
       await request("/api/admin/rental-contracts/edit", {
         method: "POST",
         body: JSON.stringify({
-          rental_id: active.id, client_id: Number(active.client_id), recurring_rent: Number(editRecurring), deposit: Number(editDeposit),
+          rental_id: active.id, client_id: Number(editClient), recurring_rent: Number(editRecurring), deposit: Number(editDeposit),
           charger_quantity: Number(editChargers), billable_extra_batteries: Number(editBillableExtra), notes: editNotes || null,
-          move_financial_history: false,
+          move_financial_history: moveHistory,
         }),
       });
       showToast("Условия договора изменены. Платёж не создавался."); setEditing(false); await reload(); await load();
@@ -272,14 +272,14 @@ export default function RentalContractForm({ bike, active, showToast, reload }: 
       <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={() => setEditing(!editing)}>✏️ Изменить условия</button></div>
       {editing && <div className="item" style={{ marginTop: 10 }}>
         <div className="formgrid">
-          <label>Client<input className="input" value={`#${active.client_id} ${active.client_name || ""}`} readOnly title="v2.3: new client requires a new rental" /></label>
+          <label>Клиент<select className="select" value={editClient} onChange={(e) => setEditClient(e.target.value)}>{options.clients.map((c) => <option key={c.id} value={c.id}>#{c.id} {c.name}</option>)}</select></label>
           <label>Цена / месяц<input className="input" type="number" value={editRecurring} onChange={(e) => setEditRecurring(e.target.value)} /></label>
           <label>Залог<input className="input" type="number" value={editDeposit} onChange={(e) => setEditDeposit(e.target.value)} /></label>
           <label>Зарядки<input className="input" type="number" value={editChargers} onChange={(e) => setEditChargers(e.target.value)} /></label>
           <label>Платных доп. батарей<input className="input" type="number" value={editBillableExtra} onChange={(e) => setEditBillableExtra(e.target.value)} /></label>
         </div>
         <label>Заметка<textarea className="textarea" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} /></label>
-        <div className="notice small">v2.3: rental owner is locked. New client requires a new rental; old charges and payments stay with the old client.</div>
+        {Number(editClient) !== Number(active.client_id) && <label className="row small"><input type="checkbox" checked={moveHistory} onChange={(e) => setMoveHistory(e.target.checked)} /> Это исправление клиента: перенести charges/payments этого rental на нового клиента</label>}
         <button className="btn primary" disabled={busy} onClick={saveEdit}>Сохранить без создания оплаты</button>
       </div>}
 
@@ -301,4 +301,3 @@ export default function RentalContractForm({ bike, active, showToast, reload }: 
     </div>
   );
 }
-
