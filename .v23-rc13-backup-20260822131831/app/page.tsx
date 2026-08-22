@@ -149,7 +149,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "dashboard" | "fleet" | "batteries" | "bikes" | "assets" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "client_center" | "clients";
+  "dashboard" | "batteries" | "bikes" | "assets" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -641,7 +641,6 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
     <>
       <div className="tabs">
         <button data-operations-v22="dashboard-tab" className={`tab ${tab === "dashboard" ? "active" : ""}`} onClick={() => setTab("dashboard")}>⚡ Центр</button>
-        <button className={`tab ${tab === "fleet" ? "active" : ""}`} onClick={() => setTab("fleet")}>🚲 Парк</button>
         <button className={`tab ${tab === "batteries" ? "active" : ""}`} onClick={() => setTab("batteries")}>🔋 Батареи</button>
         <button
           className={`tab ${tab === "bikes" ? "active" : ""}`}
@@ -691,7 +690,6 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
         >
           🚨 Исключения
         </button>
-        <button className={`tab ${tab === "client_center" ? "active" : ""}`} onClick={() => setTab("client_center")}>👥 Профили</button>
         <button
           className={`tab ${tab === "clients" ? "active" : ""}`}
           onClick={() => setTab("clients")}
@@ -701,8 +699,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       </div>
       {tab === "dashboard" && <OperationsDashboardV22 showToast={showToast} />}
       {tab === "batteries" && <BatteryMapV23 showToast={showToast} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
-      {tab === "fleet" && <FleetCenterV23 showToast={showToast} initialBikeId={focusBikeId} onManageBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} onOpenClient={(id) => { setFocusClientId(id); setTab("client_center"); }} />}
-      {tab === "bikes" && <BikesTab showToast={showToast} initialBikeId={focusBikeId} />}
+      {tab === "bikes" && <FleetCenterV23 showToast={showToast} initialBikeId={focusBikeId} onOpenClient={(id) => { setFocusClientId(id); setTab("clients"); }} />}
       {tab === "assets" && <AssetsTab showToast={showToast} />}
       {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
@@ -710,8 +707,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       {tab === "debts" && <DebtsTab showToast={showToast} />}
       {tab === "requests" && <RequestsBoardV22 showToast={showToast} />}
       {tab === "exceptions" && <ExceptionsTab />}
-      {tab === "client_center" && <ClientCenterV23 showToast={showToast} initialClientId={focusClientId} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
-      {tab === "clients" && <ClientsTab showToast={showToast} />}
+      {tab === "clients" && <ClientCenterV23 showToast={showToast} initialClientId={focusClientId} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
     </>
   );
 }
@@ -1024,7 +1020,7 @@ function BikeHealthCard({
   );
 }
 
-function BikesTab({ showToast, initialBikeId }: { showToast: (s: string) => void; initialBikeId?: number | null }) {
+function BikesTab({ showToast }: { showToast: (s: string) => void }) {
   const [bikes, setBikes] = useState<BikeCard[]>([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
@@ -1050,11 +1046,6 @@ function BikesTab({ showToast, initialBikeId }: { showToast: (s: string) => void
   useEffect(() => {
     loadBikes().catch((e) => showToast(e.message));
   }, [status]);
-  useEffect(() => {
-    if (initialBikeId && initialBikeId !== selected) {
-      loadContext(initialBikeId).catch((e) => showToast(e.message));
-    }
-  }, [initialBikeId]);
 
   return (
     <div className="grid">
@@ -1208,12 +1199,6 @@ function BikeContextPanel({
       </div>
       <BikeDebtBlock
         debts={ctx.charges}
-        showToast={showToast}
-        reload={reload}
-      />
-      <RentalActionsBlock
-        bike={ctx.bike}
-        active={active}
         showToast={showToast}
         reload={reload}
       />

@@ -7,7 +7,6 @@ type Props = {
   showToast: (text: string) => void;
   initialBikeId?: number | null;
   onOpenClient?: (clientId: number) => void;
-  onManageBike?: (bikeId: number) => void;
 };
 
 type FleetRow = any;
@@ -40,7 +39,7 @@ function WarnGroup({ title, icon, rows, cls }: { title: string; icon: string; ro
   return <div className={`v23-warn-group ${cls}`}><b>{icon} {title}</b><div className="small">{rows.join(" · ")}</div></div>;
 }
 
-export default function FleetCenterV23({ showToast, initialBikeId, onOpenClient, onManageBike }: Props) {
+export default function FleetCenterV23({ showToast, initialBikeId, onOpenClient }: Props) {
   const [rows, setRows] = useState<FleetRow[]>([]);
   const [kpi, setKpi] = useState<any>({});
   const [q, setQ] = useState("");
@@ -155,7 +154,6 @@ export default function FleetCenterV23({ showToast, initialBikeId, onOpenClient,
             <div className="v23-detail-tabs">
               {([['overview','Обзор'],['finance','Финансы'],['batteries','Батареи'],['service','Сервис'],['history','История']] as const).map(([v,l]) => <button className={`btn ${tab === v ? "primary" : ""}`} key={v} onClick={() => setTab(v)}>{l}</button>)}
             </div>
-            <div className="row" style={{ marginTop: 10 }}><button className="btn primary" onClick={() => onManageBike?.(Number(bike.bike_id))}>⚙️ Управлять договором / батареями</button></div>
           </div>
 
           {tab === "overview" && <>
