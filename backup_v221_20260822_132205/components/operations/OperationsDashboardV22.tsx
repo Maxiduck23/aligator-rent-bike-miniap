@@ -85,33 +85,12 @@ function CashRedeem({ showToast, onDone }: { showToast: (s: string) => void; onD
 
 export default function OperationsDashboardV22({ showToast }: Props) {
   const [data, setData] = useState<any>(null);
-  const [integrity, setIntegrity] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [repairing, setRepairing] = useState<number | null>(null);
   async function load() {
     setLoading(true);
-    try {
-      const [dashboard, integrityData] = await Promise.all([
-        api<any>("/api/admin/operations/dashboard"),
-        api<any>("/api/admin/operations/integrity"),
-      ]);
-      setData(dashboard);
-      setIntegrity(integrityData);
-    } catch (e: any) { showToast(e.message || "Не удалось загрузить dashboard"); }
+    try { setData(await api<any>("/api/admin/operations/dashboard")); }
+    catch (e: any) { showToast(e.message || "Не удалось загрузить dashboard"); }
     finally { setLoading(false); }
-  }
-  async function repairCharge(chargeId: number) {
-    if (!confirm(`Пересчитать charge #${chargeId} строго по существующим payment allocations?`)) return;
-    setRepairing(chargeId);
-    try {
-      const result = await api<any>("/api/admin/operations/integrity", {
-        method: "POST",
-        body: JSON.stringify({ action: "recalculate_charge", charge_id: chargeId }),
-      });
-      showToast(`Charge #${chargeId}: ${money(result.old_paid_amount)} → ${money(result.new_paid_amount)} (${result.new_status})`);
-      await load();
-    } catch (e: any) { showToast(e.message || "Не удалось исправить charge"); }
-    finally { setRepairing(null); }
   }
   useEffect(() => { load().catch(() => null); }, []);
   const k = data?.kpi || {};
@@ -123,7 +102,7 @@ export default function OperationsDashboardV22({ showToast }: Props) {
       <div className="card wide">
         <div className="space"><div><h2 style={{ marginBottom: 2 }}>⚡ Операционный центр</h2><div className="small muted">Велики, батареи, заявки, долги и деньги одним взглядом</div></div><button className="btn" onClick={load} disabled={loading}>↻</button></div>
         <div className="op22-kpis">
-          <div className="op22-kpi"><span>🚲 Велики</span><b>{k.bikes_rented || 0}/{k.bikes_total || 0}</b><small>🟢 {k.bikes_free || 0} свободно · 🛠 {k.bikes_service || 0} сервис · ⚪ {k.bikes_unassigned_other || 0} прочих</small><small>⚠️ {k.bikes_warnings || 0} предупреждений учёта</small></div>
+          <div className="op22-kpi"><span>🚲 Велики</span><b>{k.bikes_rented || 0}/{k.bikes_total || 0}</b><small>{k.bikes_free || 0} свободно · {k.bikes_problem || 0} проблем</small></div>
           <div className="op22-kpi"><span>🔋 Батареи</span><b>{k.batteries_assigned || 0}/{k.batteries_total || 0}</b><small>{k.batteries_free || 0} свободно · {k.batteries_problem || 0} проблем</small></div>
           <div className="op22-kpi"><span>📝 Заявки</span><b>{k.requests_new || 0}</b><small>{k.requests_in_progress || 0} в работе</small></div>
           <div className="op22-kpi"><span>⚠️ Просрочка</span><b>{money(k.overdue_total)}</b><small>{k.overdue_count || 0} начислений</small></div>
@@ -133,31 +112,6 @@ export default function OperationsDashboardV22({ showToast }: Props) {
 
       <div className="card wide"><div className="space"><h3>📈 Денежный поток · 30 дней</h3><span className="pill">cash only</span></div><SparkBars rows={data?.finance_30d || []} /></div>
 
-      <div className="card wide">
-        <div className="space">
-          <div><h3>🛡 Finance Integrity · v2.2.1</h3><div className="small muted">Сверяет client_charges с реальными allocations и проверяет, что платежи/долги не пересекают клиентов и rental.</div></div>
-          <span className={`pill ${Number(integrity?.critical || 0) ? "danger" : Number(integrity?.warning || 0) ? "warn" : "ok"}`}>
-            {integrity?.total ?? 0} проблем
-          </span>
-        </div>
-        <div className="op22-integrity-kpis">
-          <div><b>{integrity?.critical || 0}</b><span>критических</span></div>
-          <div><b>{integrity?.warning || 0}</b><span>предупреждений</span></div>
-          <div><b>{integrity?.repairable || 0}</b><span>можно пересчитать</span></div>
-        </div>
-        {(integrity?.rows || []).length ? <div className="list" style={{ marginTop: 10 }}>
-          {(integrity.rows || []).slice(0, 20).map((r: any) => (
-            <div className="item" key={r.issue_key}>
-              <div className="space"><b>{r.title}</b><span className={`pill ${r.severity === "critical" ? "danger" : "warn"}`}>{r.severity}</span></div>
-              <div className="small muted">{r.description}</div>
-              <div className="small">{r.client_id ? `client #${r.client_id}` : ""}{r.rental_id ? ` · rental #${r.rental_id}` : ""}{r.bike_id ? ` · bike #${r.bike_id}` : ""}</div>
-              {r.repair_action === "recalculate_charge" && <button className="btn" style={{ marginTop: 8 }} disabled={repairing === r.entity_id} onClick={() => repairCharge(Number(r.entity_id))}>↻ Исправить по allocations</button>}
-            </div>
-          ))}
-        </div> : <div className="notice" style={{ marginTop: 10 }}>✅ Проверки v2.2.1 не нашли несостыковок.</div>}
-        {(integrity?.rows || []).length > 20 && <div className="small muted" style={{ marginTop: 8 }}>Показаны первые 20 из {integrity.rows.length}.</div>}
-      </div>
-
       <CashRedeem showToast={showToast} onDone={() => load().catch(() => null)} />
 
       <div className="card"><h3>📝 Открытые заявки</h3>{requestTop.length ? <div className="list">{requestTop.map(([type, count]: any) => <div className="item space" key={type}><span>{type}</span><b>{count}</b></div>)}</div> : <p className="muted">Открытых заявок нет.</p>}</div>
@@ -166,7 +120,6 @@ export default function OperationsDashboardV22({ showToast }: Props) {
         .op22-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:14px}
         .op22-kpi{border:1px solid rgba(110,210,150,.18);border-radius:16px;padding:13px;background:rgba(6,35,22,.5);display:flex;flex-direction:column;gap:3px}
         .op22-kpi>b{font-size:24px}.op22-kpi small{opacity:.66}.op22-kpi.good{box-shadow:inset 0 0 0 1px rgba(40,200,100,.18)}.op22-kpi.bad{box-shadow:inset 0 0 0 1px rgba(230,80,80,.23)}
-        .op22-integrity-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.op22-integrity-kpis>div{border:1px solid rgba(110,210,150,.16);border-radius:12px;padding:10px;display:flex;flex-direction:column}.op22-integrity-kpis b{font-size:20px}.op22-integrity-kpis span{font-size:12px;opacity:.68}
         .op22-chart{height:190px;display:flex;align-items:flex-end;gap:3px;padding:12px 4px 3px;border-bottom:1px solid rgba(255,255,255,.09)}
         .op22-day{height:100%;flex:1;display:flex;align-items:flex-end;justify-content:center;gap:1px;min-width:3px}.op22-bar{width:43%;border-radius:4px 4px 1px 1px;opacity:.85;transition:height .25s ease}.op22-bar.income{background:#2fc873}.op22-bar.expense{background:#e05b60}
         @media(max-width:900px){.op22-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.op22-kpi:last-child{grid-column:1/-1}.op22-chart{height:150px;gap:2px}}

@@ -33,7 +33,6 @@ export async function GET(req: NextRequest) {
     for (const r of [bikesRes, batRes, reqRes, debtRes, finRes]) if (r.error) throw r.error;
 
     const bikes = bikesRes.data || [];
-    const bikeStatus = (b: any) => String(b?.status || '').trim().toLowerCase();
     const batteries = batRes.data || [];
     const requests = reqRes.data || [];
     const debts = (debtRes.data || []).filter((x: any) => !x.is_excluded);
@@ -65,13 +64,7 @@ export async function GET(req: NextRequest) {
       kpi: {
         bikes_total: bikes.length,
         bikes_rented: bikes.filter((b: any) => b.active_rental_id != null).length,
-        // v2.2.1: "free" means exactly DB status=free AND no active rental.
-        // Bikes without a rental but with service/inactive/reserved/etc are not free.
-        bikes_free: bikes.filter((b: any) => b.active_rental_id == null && bikeStatus(b) === 'free').length,
-        bikes_service: bikes.filter((b: any) => b.active_rental_id == null && ['repair','service','maintenance'].includes(bikeStatus(b))).length,
-        bikes_unassigned_other: bikes.filter((b: any) => b.active_rental_id == null && bikeStatus(b) !== 'free' && !['repair','service','maintenance'].includes(bikeStatus(b))).length,
-        bikes_warnings: bikes.filter((b: any) => Array.isArray(b.warnings) && b.warnings.length).length,
-        // Backward-compatible field name; UI now labels these as accounting warnings, not broken bikes.
+        bikes_free: bikes.filter((b: any) => b.active_rental_id == null && b.status !== 'repair').length,
         bikes_problem: bikes.filter((b: any) => Array.isArray(b.warnings) && b.warnings.length).length,
         batteries_total: batteries.length,
         batteries_assigned: batteries.filter((b: any) => b.overview_status === 'assigned').length,
