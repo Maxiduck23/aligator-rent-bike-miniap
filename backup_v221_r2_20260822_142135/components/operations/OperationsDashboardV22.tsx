@@ -88,7 +88,6 @@ export default function OperationsDashboardV22({ showToast }: Props) {
   const [integrity, setIntegrity] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [repairing, setRepairing] = useState<number | null>(null);
-  const [normalizingLegacy, setNormalizingLegacy] = useState(false);
   async function load() {
     setLoading(true);
     try {
@@ -102,7 +101,7 @@ export default function OperationsDashboardV22({ showToast }: Props) {
     finally { setLoading(false); }
   }
   async function repairCharge(chargeId: number) {
-    if (!confirm(`Пересчитать charge #${chargeId} по реальным платежам? После legacy-нормализации источником будут allocations.`)) return;
+    if (!confirm(`Пересчитать charge #${chargeId} строго по существующим payment allocations?`)) return;
     setRepairing(chargeId);
     try {
       const result = await api<any>("/api/admin/operations/integrity", {
@@ -113,34 +112,6 @@ export default function OperationsDashboardV22({ showToast }: Props) {
       await load();
     } catch (e: any) { showToast(e.message || "Не удалось исправить charge"); }
     finally { setRepairing(null); }
-  }
-  async function normalizeLegacy() {
-    setNormalizingLegacy(true);
-    try {
-      const preview = await api<any>("/api/admin/operations/integrity", {
-        method: "POST",
-        body: JSON.stringify({ action: "preview_legacy_backfill" }),
-      });
-      const count = Number(preview?.candidate_count || 0);
-      if (!count) {
-        showToast("Legacy-платежей без allocations больше нет.");
-        await load();
-        return;
-      }
-      if (!confirm(`Найдено ${count} legacy payment без allocation. Создать недостающие allocations? Суммы платежей и paid_amount этим шагом НЕ меняются.`)) return;
-      const result = await api<any>("/api/admin/operations/integrity", {
-        method: "POST",
-        body: JSON.stringify({ action: "apply_legacy_backfill" }),
-      });
-      const inserted = Number(result?.inserted_count || 0);
-      const skipped = Number(result?.skipped_count || 0);
-      showToast(`Legacy нормализован: создано ${inserted} allocations${skipped ? ` · пропущено безопасностью: ${skipped}` : ""}.`);
-      await load();
-    } catch (e: any) {
-      showToast(e.message || "Не удалось нормализовать legacy payments");
-    } finally {
-      setNormalizingLegacy(false);
-    }
   }
   useEffect(() => { load().catch(() => null); }, []);
   const k = data?.kpi || {};
@@ -164,7 +135,7 @@ export default function OperationsDashboardV22({ showToast }: Props) {
 
       <div className="card wide">
         <div className="space">
-          <div><h3>🛡 Finance Integrity · v2.2.1</h3><div className="small muted">Сверяет client_charges с реальными платежами. До нормализации понимает старые direct payment; после backfill все распределения становятся allocations.</div></div>
+          <div><h3>🛡 Finance Integrity · v2.2.1</h3><div className="small muted">Сверяет client_charges с реальными allocations и проверяет, что платежи/долги не пересекают клиентов и rental.</div></div>
           <span className={`pill ${Number(integrity?.critical || 0) ? "danger" : Number(integrity?.warning || 0) ? "warn" : "ok"}`}>
             {integrity?.total ?? 0} проблем
           </span>
@@ -173,28 +144,14 @@ export default function OperationsDashboardV22({ showToast }: Props) {
           <div><b>{integrity?.critical || 0}</b><span>критических</span></div>
           <div><b>{integrity?.warning || 0}</b><span>предупреждений</span></div>
           <div><b>{integrity?.repairable || 0}</b><span>можно пересчитать</span></div>
-          <div><b>{integrity?.legacy_candidates || 0}</b><span>legacy без allocation</span></div>
         </div>
-        {Number(integrity?.legacy_candidates || 0) > 0 && (
-          <div className="notice" style={{ marginTop: 10 }}>
-            <div className="space">
-              <div>
-                <b>Старая модель платежей</b>
-                <div className="small muted">Будут добавлены только недостающие allocations. client_payments.amount и paid_amount на этом шаге не меняются.</div>
-              </div>
-              <button className="btn" disabled={normalizingLegacy} onClick={normalizeLegacy}>
-                {normalizingLegacy ? "..." : "Нормализовать legacy"}
-              </button>
-            </div>
-          </div>
-        )}
         {(integrity?.rows || []).length ? <div className="list" style={{ marginTop: 10 }}>
           {(integrity.rows || []).slice(0, 20).map((r: any) => (
             <div className="item" key={r.issue_key}>
               <div className="space"><b>{r.title}</b><span className={`pill ${r.severity === "critical" ? "danger" : "warn"}`}>{r.severity}</span></div>
               <div className="small muted">{r.description}</div>
               <div className="small">{r.client_id ? `client #${r.client_id}` : ""}{r.rental_id ? ` · rental #${r.rental_id}` : ""}{r.bike_id ? ` · bike #${r.bike_id}` : ""}</div>
-              {r.repair_action === "recalculate_charge" && <button className="btn" style={{ marginTop: 8 }} disabled={repairing === r.entity_id} onClick={() => repairCharge(Number(r.entity_id))}>↻ Исправить по платежам</button>}
+              {r.repair_action === "recalculate_charge" && <button className="btn" style={{ marginTop: 8 }} disabled={repairing === r.entity_id} onClick={() => repairCharge(Number(r.entity_id))}>↻ Исправить по allocations</button>}
             </div>
           ))}
         </div> : <div className="notice" style={{ marginTop: 10 }}>✅ Проверки v2.2.1 не нашли несостыковок.</div>}
@@ -209,7 +166,7 @@ export default function OperationsDashboardV22({ showToast }: Props) {
         .op22-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:14px}
         .op22-kpi{border:1px solid rgba(110,210,150,.18);border-radius:16px;padding:13px;background:rgba(6,35,22,.5);display:flex;flex-direction:column;gap:3px}
         .op22-kpi>b{font-size:24px}.op22-kpi small{opacity:.66}.op22-kpi.good{box-shadow:inset 0 0 0 1px rgba(40,200,100,.18)}.op22-kpi.bad{box-shadow:inset 0 0 0 1px rgba(230,80,80,.23)}
-        .op22-integrity-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}.op22-integrity-kpis>div{border:1px solid rgba(110,210,150,.16);border-radius:12px;padding:10px;display:flex;flex-direction:column}.op22-integrity-kpis b{font-size:20px}.op22-integrity-kpis span{font-size:12px;opacity:.68}
+        .op22-integrity-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.op22-integrity-kpis>div{border:1px solid rgba(110,210,150,.16);border-radius:12px;padding:10px;display:flex;flex-direction:column}.op22-integrity-kpis b{font-size:20px}.op22-integrity-kpis span{font-size:12px;opacity:.68}
         .op22-chart{height:190px;display:flex;align-items:flex-end;gap:3px;padding:12px 4px 3px;border-bottom:1px solid rgba(255,255,255,.09)}
         .op22-day{height:100%;flex:1;display:flex;align-items:flex-end;justify-content:center;gap:1px;min-width:3px}.op22-bar{width:43%;border-radius:4px 4px 1px 1px;opacity:.85;transition:height .25s ease}.op22-bar.income{background:#2fc873}.op22-bar.expense{background:#e05b60}
         @media(max-width:900px){.op22-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.op22-kpi:last-child{grid-column:1/-1}.op22-chart{height:150px;gap:2px}}

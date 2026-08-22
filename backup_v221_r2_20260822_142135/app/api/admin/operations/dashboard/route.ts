@@ -14,22 +14,6 @@ function addDays(iso: string, diff: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function cashKind(row: any): 'income' | 'expense' | 'other' {
-  const sign = String(row?.sign || '').trim().toLowerCase();
-  const eventType = String(row?.event_type || '').trim().toLowerCase();
-  if (eventType === 'payment_received' || sign === 'income') return 'income';
-  if (eventType === 'expense_paid' || sign === 'expense') return 'expense';
-  return 'other';
-}
-
-function cashValue(row: any) {
-  // Finance Parser stores many expenses with a NEGATIVE cash_amount.
-  // Dashboard figures are magnitudes: expense=1500, not -1500.
-  // Profit is then income - expense. Without abs(), subtracting a negative
-  // expense incorrectly turns into addition.
-  return Math.abs(Number(row?.cash_amount ?? row?.amount ?? 0));
-}
-
 export async function GET(req: NextRequest) {
   try {
     requireAdmin(req);
@@ -41,7 +25,7 @@ export async function GET(req: NextRequest) {
       supabaseAdmin.from('client_requests').select('id,status,request_type,priority').in('status', ['new','in_progress']),
       supabaseAdmin.from('miniapp_debt_items').select('charge_id,debt_left,overdue_days,is_excluded'),
       supabaseAdmin.from('bot_finance_events')
-        .select('event_date,sign,event_type,cash_amount,amount,affects_cash,category')
+        .select('event_date,sign,cash_amount,amount,affects_cash,category')
         .gte('event_date', since)
         .lte('event_date', today)
         .order('event_date', { ascending: true }),
@@ -60,27 +44,19 @@ export async function GET(req: NextRequest) {
       const date = addDays(since, i);
       byDay.set(date, { date, income: 0, expense: 0, profit: 0 });
     }
-
-    let todayIncome = 0;
-    let todayExpense = 0;
+    let todayIncome = 0, todayExpense = 0;
     for (const row of finance as any[]) {
       if (row.affects_cash === false) continue;
-      const kind = cashKind(row);
-      if (kind === 'other') continue;
-      const amount = cashValue(row);
+      const amount = Number(row.cash_amount ?? row.amount ?? 0);
       const bucket = byDay.get(String(row.event_date));
       if (!bucket) continue;
-
-      if (kind === 'income') bucket.income += amount;
-      if (kind === 'expense') bucket.expense += amount;
-
-      if (String(row.event_date) === today) {
-        if (kind === 'income') todayIncome += amount;
-        if (kind === 'expense') todayExpense += amount;
-      }
-    }
-    for (const bucket of byDay.values()) {
+      if (row.sign === 'income') bucket.income += amount;
+      if (row.sign === 'expense') bucket.expense += amount;
       bucket.profit = bucket.income - bucket.expense;
+      if (String(row.event_date) === today) {
+        if (row.sign === 'income') todayIncome += amount;
+        if (row.sign === 'expense') todayExpense += amount;
+      }
     }
 
     return ok({
@@ -89,11 +65,13 @@ export async function GET(req: NextRequest) {
       kpi: {
         bikes_total: bikes.length,
         bikes_rented: bikes.filter((b: any) => b.active_rental_id != null).length,
-        // "free" = exactly DB status=free AND no active rental.
+        // v2.2.1: "free" means exactly DB status=free AND no active rental.
+        // Bikes without a rental but with service/inactive/reserved/etc are not free.
         bikes_free: bikes.filter((b: any) => b.active_rental_id == null && bikeStatus(b) === 'free').length,
         bikes_service: bikes.filter((b: any) => b.active_rental_id == null && ['repair','service','maintenance'].includes(bikeStatus(b))).length,
         bikes_unassigned_other: bikes.filter((b: any) => b.active_rental_id == null && bikeStatus(b) !== 'free' && !['repair','service','maintenance'].includes(bikeStatus(b))).length,
         bikes_warnings: bikes.filter((b: any) => Array.isArray(b.warnings) && b.warnings.length).length,
+        // Backward-compatible field name; UI now labels these as accounting warnings, not broken bikes.
         bikes_problem: bikes.filter((b: any) => Array.isArray(b.warnings) && b.warnings.length).length,
         batteries_total: batteries.length,
         batteries_assigned: batteries.filter((b: any) => b.overview_status === 'assigned').length,
