@@ -324,9 +324,6 @@ export default function FinanceRangePanel({ showToast }: Props) {
           <div className="kpi"><div>Записей</div><b>{data?.total_rows ?? totals.count ?? 0}</b></div>
         </div>
       </div>
-
-      <PaymentTokenAdmin showToast={showToast} onDone={() => load().catch(() => null)} />
-
       <div className="card">
         <h3>По категориям</h3>
         <div className="list">

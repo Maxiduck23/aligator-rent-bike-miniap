@@ -3,7 +3,19 @@ import { fail, ok, optionalString, requiredString } from '@/lib/http';
 import { getAuthContext } from '@/lib/telegram';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
-async function getClientByTelegram(telegramId: number) {
+const TYPES: Record<string, string> = {
+  rent_request: 'Новая аренда',
+  battery_request: 'Батарея',
+  repair_request: 'Ремонт',
+  replace_request: 'Замена велосипеда',
+  return_request: 'Возврат велосипеда',
+  accessory_request: 'Аксессуар / зарядка',
+  payment_request: 'Оплата / долг',
+  contract_request: 'Договор / данные',
+  other_request: 'Другое',
+};
+
+async function getClient(telegramId: number) {
   const { data, error } = await supabaseAdmin
     .from('miniapp_client_auth_map')
     .select('*')
@@ -16,7 +28,7 @@ async function getClientByTelegram(telegramId: number) {
 export async function GET(req: NextRequest) {
   try {
     const auth = getAuthContext(req);
-    const client = await getClientByTelegram(auth.telegramId);
+    const client = await getClient(auth.telegramId);
     if (!client) throw new Error('Telegram не привязан к клиенту');
     const { data, error } = await supabaseAdmin
       .from('client_requests')
@@ -34,36 +46,57 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const auth = getAuthContext(req);
-    const client = await getClientByTelegram(auth.telegramId);
+    const client = await getClient(auth.telegramId);
     if (!client) throw new Error('Telegram не привязан к клиенту');
+    const clientId = Number(client.client_id);
     const body = await req.json();
     const requestType = requiredString(body.request_type, 'request_type');
-    const description = requiredString(body.description, 'description');
+    if (!TYPES[requestType]) throw new Error('Неизвестный тип запроса');
+    const requestSubtype = optionalString(body.request_subtype);
     const preferredDate = optionalString(body.preferred_date);
-    const titleMap: Record<string, string> = {
-      rent_request: 'Запрос на аренду',
-      battery_request: 'Запрос на доп. батарею',
-      repair_request: 'Запрос на ремонт',
-      payment_rule_request: 'Запрос изменить оплату',
-      return_request: 'Запрос на возврат',
-      accessory_request: 'Запрос аксессуара / зарядки',
-      other_request: 'Другое',
-    };
+    const bikeId = body.bike_id === null || body.bike_id === undefined || body.bike_id === '' ? null : Number(body.bike_id);
+    let rentalId: number | null = null;
+
+    if (bikeId !== null) {
+      if (!Number.isFinite(bikeId) || bikeId <= 0) throw new Error('Некорректный велосипед');
+      const { data: rental, error } = await supabaseAdmin
+        .from('rentals')
+        .select('id,bike_id,client_id,status')
+        .eq('client_id', clientId)
+        .eq('bike_id', bikeId)
+        .eq('status', 'active')
+        .maybeSingle();
+      if (error) throw error;
+      if (!rental && !['rent_request','other_request'].includes(requestType)) {
+        throw new Error('Этот велосипед не находится в твоей активной аренде');
+      }
+      rentalId = rental ? Number(rental.id) : null;
+    }
+
+    // No free-form client comment: description is generated from structured fields.
+    const generatedDescription = [TYPES[requestType], requestSubtype ? `подтип: ${requestSubtype}` : '', bikeId ? `вел #${bikeId}` : '']
+      .filter(Boolean).join(' · ');
+
     const { data, error } = await supabaseAdmin
       .from('client_requests')
       .insert({
-        client_id: Number(client.client_id),
+        client_id: clientId,
         telegram_id: auth.telegramId,
         request_type: requestType,
+        request_subtype: requestSubtype,
         status: 'new',
-        title: titleMap[requestType] || 'Клиентский запрос',
-        description,
+        priority: 'normal',
+        title: TYPES[requestType],
+        description: generatedDescription,
         preferred_date: preferredDate,
+        bike_id: bikeId,
+        rental_id: rentalId,
+        metadata: { structured_v22: true },
       })
       .select('*')
       .single();
     if (error) throw error;
-    return ok(data);
+    return ok(data, 201);
   } catch (e) {
     return fail(e);
   }

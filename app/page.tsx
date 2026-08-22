@@ -2,6 +2,10 @@
 
 import RentalContractForm from "@/components/rentals/RentalContractForm";
 import FinanceRangePanel from "@/components/finance/FinanceRangePanel";
+import OperationsDashboardV22 from "@/components/operations/OperationsDashboardV22";
+import BatteryOverviewV22 from "@/components/operations/BatteryOverviewV22";
+import RequestsBoardV22 from "@/components/operations/RequestsBoardV22";
+import ClientActionsV22 from "@/components/client/ClientActionsV22";
 import { useEffect, useMemo, useState } from "react";
 
 declare global {
@@ -142,7 +146,7 @@ type BikeContext = {
 
 type Part = { due_day: number; amount: number };
 type AdminTab =
-  "bikes" | "assets" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
+  "dashboard" | "batteries" | "bikes" | "assets" | "health" | "balances" | "finance" | "debts" | "requests" | "exceptions" | "clients";
 
 type AuthMe = {
   telegram_id: number;
@@ -627,10 +631,12 @@ export default function Page() {
 }
 
 function AdminApp({ showToast }: { showToast: (s: string) => void }) {
-  const [tab, setTab] = useState<AdminTab>("bikes");
+  const [tab, setTab] = useState<AdminTab>("dashboard");
   return (
     <>
       <div className="tabs">
+        <button data-operations-v22="dashboard-tab" className={`tab ${tab === "dashboard" ? "active" : ""}`} onClick={() => setTab("dashboard")}>⚡ Центр</button>
+        <button className={`tab ${tab === "batteries" ? "active" : ""}`} onClick={() => setTab("batteries")}>🔋 Батареи</button>
         <button
           className={`tab ${tab === "bikes" ? "active" : ""}`}
           onClick={() => setTab("bikes")}
@@ -686,13 +692,15 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
           👤 Клиенты
         </button>
       </div>
+      {tab === "dashboard" && <OperationsDashboardV22 showToast={showToast} />}
+      {tab === "batteries" && <BatteryOverviewV22 showToast={showToast} />}
       {tab === "bikes" && <BikesTab showToast={showToast} />}
       {tab === "assets" && <AssetsTab showToast={showToast} />}
       {tab === "health" && <BikeHealthTab showToast={showToast} />}
       {tab === "balances" && <BalancesTab showToast={showToast} />}
       {tab === "finance" && <FinanceLogTab showToast={showToast} />}
       {tab === "debts" && <DebtsTab showToast={showToast} />}
-      {tab === "requests" && <RuleRequestsTab showToast={showToast} />}
+      {tab === "requests" && <RequestsBoardV22 showToast={showToast} />}
       {tab === "exceptions" && <ExceptionsTab />}
       {tab === "clients" && <ClientsTab showToast={showToast} />}
     </>
@@ -3841,55 +3849,9 @@ function ClientApp({ showToast }: { showToast: (s: string) => void }) {
   );
 }
 
+/* operations-v22:ClientGeneralRequestBlock */
 function ClientGeneralRequestBlock({ showToast, reload }: { showToast: (s: string) => void; reload: () => Promise<void> }) {
-  const [requestType, setRequestType] = useState("battery_request");
-  const [preferredDate, setPreferredDate] = useState("");
-  const [description, setDescription] = useState("");
-  const [loading, setLoading] = useState(false);
-  async function submit() {
-    if (!description.trim()) return showToast("Опиши запрос");
-    setLoading(true);
-    try {
-      await api("/api/client/requests", {
-        method: "POST",
-        body: JSON.stringify({ request_type: requestType, preferred_date: preferredDate || null, description }),
-      });
-      showToast("Запрос отправлен админу");
-      setDescription("");
-      setPreferredDate("");
-      await reload();
-    } finally {
-      setLoading(false);
-    }
-  }
-  return (
-    <div className="card">
-      <h3>➕ Создать запрос</h3>
-      <p className="small muted">Пока это заявка без автоматического создания аренды/ремонта. Админ увидит её во вкладке 📝 Запросы.</p>
-      <div className="formgrid">
-        <label>
-          Тип
-          <select className="select" value={requestType} onChange={(e) => setRequestType(e.target.value)}>
-            <option value="rent_request">🚲 Хочу арендовать велик</option>
-            <option value="battery_request">🔋 Нужна доп. батарея</option>
-            <option value="repair_request">🛠 Нужен ремонт</option>
-            <option value="return_request">🔁 Хочу вернуть велик</option>
-            <option value="accessory_request">📦 Нужен аксессуар / зарядка</option>
-            <option value="other_request">❓ Другое</option>
-          </select>
-        </label>
-        <label>
-          Желаемая дата
-          <input className="input" type="date" value={preferredDate} onChange={(e) => setPreferredDate(e.target.value)} />
-        </label>
-      </div>
-      <label>
-        Комментарий
-        <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="например: нужна доп. батарея на следующую неделю" />
-      </label>
-      <button className="btn primary" disabled={loading || !description.trim()} onClick={submit}>{loading ? "Отправляю..." : "Отправить запрос"}</button>
-    </div>
-  );
+  return <ClientActionsV22 showToast={showToast} reload={reload} />;
 }
 
 function ClientRuleRequestBlock({
