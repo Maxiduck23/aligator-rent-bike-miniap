@@ -78,44 +78,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
     for (const r of [clientRes, summaryRes, categoryRes, chargesRes, allChargesRes, paymentsRes, allocationsRes, rulesRes]) if (r.error) throw r.error;
 
-    // v25: a soft-reversed real bank/token payment stays in client_payments for audit,
-    // but must not inflate client balance/advance/statistics.
-    const validPayments = (paymentsRes.data || []).filter(paymentCountsAsReal);
-    const baseSummary: any = summaryRes.data || {};
-    const paymentsTotal = validPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-    const paidOnCharges = Number(baseSummary.paid_on_charges || 0);
-    const chargedTotal = Number(baseSummary.charged_total || 0);
-    const unallocatedAdvance = Math.max(paymentsTotal - paidOnCharges, 0);
-    const summary = {
-      ...baseSummary,
-      payments_total: paymentsTotal,
-      unallocated_advance: unallocatedAdvance,
-      net_balance: paymentsTotal - chargedTotal,
-    };
-
-    const categories = (categoryRes.data || []).filter((r: any) => String(r.category || '') !== 'advance');
-    if (unallocatedAdvance > 0) {
-      categories.push({
-        client_id: clientId,
-        category: 'advance',
-        category_label: 'Аванс / нераспределено',
-        charged_total: 0,
-        paid_total: unallocatedAdvance,
-        open_total: -unallocatedAdvance,
-        overdue_total: 0,
-      });
-    }
-
     return ok({
       client: clientRes.data,
-      summary,
-      categories,
+      summary: summaryRes.data,
+      categories: categoryRes.data || [],
       charges: chargesRes.data || [],
       all_charges: allChargesRes.data || [],
-      payments: validPayments,
+      payments: paymentsRes.data || [],
       allocations: allocationsRes.data || [],
       payment_rules: rulesRes.data || [],
-      finance_stats: computeFinanceStats(allChargesRes.data || [], validPayments),
+      finance_stats: computeFinanceStats(allChargesRes.data || [], paymentsRes.data || []),
     });
   } catch (e) {
     return fail(e);

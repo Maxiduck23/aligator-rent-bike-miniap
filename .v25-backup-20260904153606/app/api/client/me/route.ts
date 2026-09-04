@@ -36,46 +36,17 @@ export async function GET(req: NextRequest) {
       if (r.error) throw r.error;
     }
 
-    // v25: reversed external payments remain as audit records in the database,
-    // but a client-facing balance must count only real/verified active payments.
-    const validPayments = (paymentsRes.data || []).filter((p: any) =>
-      String(p.verification_status || 'verified') === 'verified'
-    );
-    const baseSummary: any = summaryRes.data || {};
-    const paymentsTotal = validPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-    const paidOnCharges = Number(baseSummary.paid_on_charges || 0);
-    const chargedTotal = Number(baseSummary.charged_total || 0);
-    const unallocatedAdvance = Math.max(paymentsTotal - paidOnCharges, 0);
-    const financeStats = {
-      ...baseSummary,
-      payments_total: paymentsTotal,
-      unallocated_advance: unallocatedAdvance,
-      net_balance: paymentsTotal - chargedTotal,
-    };
-    const balances = (balancesRes.data || []).filter((r: any) => String(r.category || '') !== 'advance');
-    if (unallocatedAdvance > 0) {
-      balances.push({
-        client_id: clientId,
-        category: 'advance',
-        category_label: 'Аванс / нераспределено',
-        charged_total: 0,
-        paid_total: unallocatedAdvance,
-        open_total: -unallocatedAdvance,
-        overdue_total: 0,
-      });
-    }
-
     return ok({
       auth: { telegram_id: auth.telegramId, is_admin: auth.isAdmin },
       client,
       active_rentals: rentalsRes.data || [],
       debts: debtsRes.data || [],
-      balances,
+      balances: balancesRes.data || [],
       payment_rules: rulesRes.data || [],
       requests: requestsRes.data || [],
       general_requests: generalRequestsRes.data || [],
-      payments: validPayments,
-      finance_stats: financeStats,
+      payments: paymentsRes.data || [],
+      finance_stats: summaryRes.data || null,
     });
   } catch (e) {
     return fail(e);

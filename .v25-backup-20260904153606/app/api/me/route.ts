@@ -15,8 +15,6 @@ export async function GET(req: NextRequest) {
     return ok({
       telegram_id: auth.telegramId,
       is_admin: auth.isAdmin,
-      is_worker: auth.isWorker,
-      role: auth.role,
       user: auth.user,
       client: client || null,
     });

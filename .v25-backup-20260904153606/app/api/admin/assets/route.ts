@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { fail, ok, optionalNumber, optionalString, requiredNumber } from "@/lib/http";
-import { requireStaff } from "@/lib/telegram";
+import { requireAdmin } from "@/lib/telegram";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 function requiredString(value: unknown, field: string): string {
@@ -11,16 +11,12 @@ function requiredString(value: unknown, field: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const auth = requireStaff(req);
+    const auth = requireAdmin(req);
     const body = await req.json();
     const assetType = optionalString(body.asset_type) || "bike";
     const action = optionalString(body.action) || "purchase";
     const date = optionalString(body.date) || new Date().toISOString().slice(0, 10);
     const notes = optionalString(body.notes);
-
-    if (auth.isWorker && assetType !== "bike") {
-      throw new Error("Worker can record only bike purchase/sale");
-    }
 
     if (assetType === "bike" && action === "purchase") {
       const { data, error } = await supabaseAdmin.rpc("miniapp_asset_bike_purchase", {
@@ -83,8 +79,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = requireStaff(req);
-    if (auth.isWorker) return ok({ recent: [], history_hidden: true });
+    requireAdmin(req);
     const { data, error } = await supabaseAdmin
       .from('asset_transactions')
       .select('*')

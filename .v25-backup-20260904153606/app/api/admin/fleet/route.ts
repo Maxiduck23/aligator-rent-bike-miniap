@@ -23,33 +23,7 @@ export async function GET(req: NextRequest) {
       .order('bike_id', { ascending: true });
     if (error) throw error;
 
-    // v25: never trust cached/view month_profit for reversed payments. Rebuild the
-    // current month directly from live finance events and ignore void/reversed rows.
-    const monthStart = new Intl.DateTimeFormat('sv-SE', {
-      timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit',
-    }).format(new Date()) + '-01';
-    const { data: financeRows, error: financeError } = await supabaseAdmin
-      .from('bot_finance_events')
-      .select('bike_id,sign,event_type,amount,cash_amount,affects_cash,voided_at,action,verification_status')
-      .gte('event_date', monthStart);
-    if (financeError) throw financeError;
-    const profitByBike = new Map<number, number>();
-    for (const f of financeRows || []) {
-      const bikeId = Number(f.bike_id || 0);
-      if (!bikeId) continue;
-      if (f.voided_at || String(f.action || '').toLowerCase() === 'void' || String(f.verification_status || '').toLowerCase() === 'reversed') continue;
-      if (f.affects_cash === false) continue;
-      const amount = Math.abs(Number(f.cash_amount ?? f.amount ?? 0));
-      const kind = String(f.event_type || '') === 'expense_paid' || String(f.sign || '') === 'expense'
-        ? -amount
-        : (String(f.event_type || '') === 'payment_received' || String(f.sign || '') === 'income' ? amount : 0);
-      if (kind) profitByBike.set(bikeId, (profitByBike.get(bikeId) || 0) + kind);
-    }
-
-    const all = (data || []).map((r: any) => ({
-      ...r,
-      month_profit: profitByBike.get(Number(r.bike_id)) || 0,
-    }));
+    const all = data || [];
     const rows = all.filter((r: any) => {
       if (status !== 'all' && lower(r.fleet_status) !== status) return false;
       if (problem !== 'all' && !hasWarnings(r, problem as any)) return false;

@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
 import { fail, ok } from '@/lib/http';
-import { requireStaff } from '@/lib/telegram';
+import { requireAdmin } from '@/lib/telegram';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const auth = requireStaff(req);
+    requireAdmin(req);
     const { id } = await ctx.params;
     const bikeId = Number(id);
     if (!Number.isFinite(bikeId)) throw new Error('Bad bike_id');
@@ -34,31 +34,6 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       client_telegram_id: r.clients?.telegram_id || null,
       clients: undefined,
     }));
-
-    if (auth.isWorker) {
-      const workerBike: any = bike.data || {};
-      return ok({
-        bike: {
-          id: workerBike.id, bike_label: workerBike.bike_label, brand: workerBike.brand,
-          model: workerBike.model, status: workerBike.status, active_rental_id: workerBike.active_rental_id,
-          active_client_id: workerBike.active_client_id, client_name: workerBike.client_name,
-          client_telegram_id: null, private_telegram_id: null, active_price: null,
-          debt_total: Number(workerBike.debt_total || 0), open_debts: Number(workerBike.open_debts || 0),
-          active_payment_rules: 0, warnings: [],
-        },
-        active_rentals: activeRentals.map((r: any) => ({
-          id: r.id, client_id: r.client_id, client_name: r.client_name, bike_id: r.bike_id,
-          status: r.status, start_date: r.start_date, end_date: r.end_date,
-          plan_code: r.plan_code || null, plan_name: r.plan_name || null,
-          charger_quantity: r.charger_quantity ?? null,
-          client_phone: r.client_phone || null,
-          client_telegram_id: null, private_telegram_id: null,
-        })),
-        charges: charges.data || [],
-        payment_rules: [],
-        batteries: batteries.data || [],
-      });
-    }
 
     return ok({
       bike: bike.data,

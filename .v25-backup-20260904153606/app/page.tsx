@@ -154,8 +154,6 @@ type AdminTab =
 type AuthMe = {
   telegram_id: number;
   is_admin: boolean;
-  is_worker?: boolean;
-  role?: "admin" | "worker" | "client";
   user: any;
   client: null | {
     client_id: number;
@@ -614,7 +612,7 @@ export default function Page() {
         </div>
         <div className="badge" title={tgStatus}>
           {tgStatus === "Telegram OK" ? "TG OK" : "TG ?"} ·{" "}
-          {auth?.role || (auth?.is_admin ? "admin" : auth?.is_worker ? "worker" : "client")}
+          {auth?.is_admin ? "admin" : "client"}
         </div>
       </div>
 
@@ -629,8 +627,7 @@ export default function Page() {
         </div>
       )}
       {auth && auth.is_admin && <AdminApp showToast={showToast} />}
-      {auth && !auth.is_admin && auth.is_worker && <WorkerApp showToast={showToast} />}
-      {auth && !auth.is_admin && !auth.is_worker && <ClientApp showToast={showToast} />}
+      {auth && !auth.is_admin && <ClientApp showToast={showToast} />}
       {toast && <div className="toast">{toast}</div>}
     </main>
   );
@@ -716,149 +713,6 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
       {tab === "client_center" && <ClientCenterV23 showToast={showToast} initialClientId={focusClientId} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
       {tab === "clients" && <ClientsTab showToast={showToast} />}
     </>
-  );
-}
-
-type WorkerTab = "bikes" | "batteries" | "assets" | "debts" | "clients";
-
-function WorkerApp({ showToast }: { showToast: (s: string) => void }) {
-  const [tab, setTab] = useState<WorkerTab>("bikes");
-  const [focusBikeId, setFocusBikeId] = useState<number | null>(null);
-  return (
-    <>
-      <div className="tabs">
-        <button className={`tab ${tab === "bikes" ? "active" : ""}`} onClick={() => setTab("bikes")}>🚲 Велики</button>
-        <button className={`tab ${tab === "batteries" ? "active" : ""}`} onClick={() => setTab("batteries")}>🔋 Батареи</button>
-        <button className={`tab ${tab === "assets" ? "active" : ""}`} onClick={() => setTab("assets")}>🧾 Активы</button>
-        <button className={`tab ${tab === "debts" ? "active" : ""}`} onClick={() => setTab("debts")}>⚠️ Долги</button>
-        <button className={`tab ${tab === "clients" ? "active" : ""}`} onClick={() => setTab("clients")}>👤 Клиенты</button>
-      </div>
-      {tab === "bikes" && <BikesTab showToast={showToast} initialBikeId={focusBikeId} workerMode />}
-      {tab === "batteries" && <BatteryMapV23 showToast={showToast} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
-      {tab === "assets" && <AssetsTab showToast={showToast} workerMode />}
-      {tab === "debts" && <WorkerDebtsTab showToast={showToast} />}
-      {tab === "clients" && <WorkerClientsTab showToast={showToast} />}
-    </>
-  );
-}
-
-function WorkerDebtsTab({ showToast }: { showToast: (s: string) => void }) {
-  const [rows, setRows] = useState<Debt[]>([]);
-  const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api<Debt[]>("/api/admin/debts?include_excluded=0&only_overdue=0"));
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => { load().catch((e) => showToast(e.message)); }, []);
-
-  const filtered = rows.filter((d) => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return true;
-    return `${d.charge_id} ${d.client_id} ${d.client_name || ""} ${d.bike_id || ""} ${d.bike_label || ""}`.toLowerCase().includes(needle);
-  });
-  const total = filtered.reduce((sum, d) => sum + Number(d.debt_left || 0), 0);
-
-  return (
-    <div className="card wide">
-      <div className="space"><h3>⚠️ Долги клиентов</h3><span className="money">{money(total)}</span></div>
-      <p className="small muted">Рабочий режим: видны только открытые долги. Оплаты, доходы, расходы и финансовая история скрыты.</p>
-      <div className="row">
-        <input className="input" style={{ maxWidth: 320 }} placeholder="поиск клиента / велика / charge" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn" disabled={loading} onClick={() => load().catch((e) => showToast(e.message))}>{loading ? "Загрузка..." : "Обновить"}</button>
-      </div>
-      <div className="tableWrap" style={{ marginTop: 10 }}>
-        <table className="table">
-          <thead><tr><th>Клиент</th><th>Велик</th><th>Долг</th><th>Срок</th><th>Просрочка</th></tr></thead>
-          <tbody>
-            {filtered.map((d) => <tr key={d.charge_id}>
-              <td>#{d.client_id} {d.client_name}</td>
-              <td>{d.bike_id ? `#${d.bike_id} ${d.bike_label || ""}` : "-"}</td>
-              <td className="dangerText"><b>{money(d.debt_left)}</b></td>
-              <td>{d.due_date || "-"}</td>
-              <td>{Number(d.overdue_days || 0) > 0 ? `${d.overdue_days} дн.` : "нет"}</td>
-            </tr>)}
-            {!filtered.length && <tr><td colSpan={5} className="muted">Долгов по фильтру нет.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function WorkerClientsTab({ showToast }: { showToast: (s: string) => void }) {
-  const [rows, setRows] = useState<Client[]>([]);
-  const [q, setQ] = useState("");
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [address, setAddress] = useState("");
-  const [docType, setDocType] = useState("ID card");
-  const [docNumber, setDocNumber] = useState("");
-  const [notes, setNotes] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function load() {
-    setRows(await api<Client[]>(`/api/admin/clients?q=${encodeURIComponent(q)}`));
-  }
-  useEffect(() => { load().catch((e) => showToast(e.message)); }, []);
-
-  async function create() {
-    if (!name.trim()) return showToast("Укажи имя клиента");
-    setBusy(true);
-    try {
-      await api("/api/admin/clients", {
-        method: "POST",
-        body: JSON.stringify({
-          name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
-          address: address.trim() || null, doc_type: docType || null,
-          doc_number: docNumber.trim() || null, notes: notes.trim() || null,
-        }),
-      });
-      setName(""); setPhone(""); setEmail(""); setAddress(""); setDocType("ID card"); setDocNumber(""); setNotes("");
-      showToast("Клиент добавлен. Закрытые данные после сохранения рабочему не показываются.");
-      await load();
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <div className="grid">
-      <div className="card">
-        <h3>➕ Добавить клиента</h3>
-        <p className="small muted">Работник может записать данные договора при создании клиента. После сохранения список возвращает только ID, имя, телефон и активные велики; адрес, документ, e-mail, заметки, профили и финансовая история скрыты.</p>
-        <label>Имя и фамилия<input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <div className="formgrid">
-          <label>Телефон<input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+420..." /></label>
-          <label>E-mail<input className="input" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-        </div>
-        <label>Адрес<input className="input" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
-        <div className="formgrid">
-          <label>Тип документа<select className="select" value={docType} onChange={(e) => setDocType(e.target.value)}><option value="ID card">ID card</option><option value="passport">Паспорт</option><option value="driver_license">Права</option><option value="visa">Виза / pobyt</option><option value="other">Другое</option></select></label>
-          <label>Номер документа<input className="input" value={docNumber} onChange={(e) => setDocNumber(e.target.value)} /></label>
-        </div>
-        <label>Заметка<textarea className="textarea" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-        <button className="btn primary" disabled={busy || !name.trim()} onClick={create}>{busy ? "Добавляю..." : "Добавить клиента"}</button>
-      </div>
-      <div className="card">
-        <h3>👤 Клиенты</h3>
-        <div className="row">
-          <input className="input" placeholder="поиск по имени / телефону / ID" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load().catch((er) => showToast(er.message))} />
-          <button className="btn" onClick={() => load().catch((e) => showToast(e.message))}>Найти</button>
-        </div>
-        <div className="list" style={{ marginTop: 10 }}>
-          {rows.map((c) => <div className="item" key={c.id}>
-            <div className="space"><b>#{c.id} {c.name}</b><span className="pill">{(c.active_bike_ids || []).length ? `🚲 ${(c.active_bike_ids || []).join(", ")}` : "без велика"}</span></div>
-            <div className="small muted">📞 {c.phone || "-"}</div>
-          </div>)}
-          {!rows.length && <p className="muted">Клиенты не найдены.</p>}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -1170,7 +1024,7 @@ function BikeHealthCard({
   );
 }
 
-function BikesTab({ showToast, initialBikeId, workerMode = false }: { showToast: (s: string) => void; initialBikeId?: number | null; workerMode?: boolean }) {
+function BikesTab({ showToast, initialBikeId }: { showToast: (s: string) => void; initialBikeId?: number | null }) {
   const [bikes, setBikes] = useState<BikeCard[]>([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
@@ -1279,7 +1133,6 @@ function BikesTab({ showToast, initialBikeId, workerMode = false }: { showToast:
             ctx={ctx}
             reload={() => loadContext(ctx.bike.id)}
             showToast={showToast}
-            workerMode={workerMode}
           />
         )}
       </div>
@@ -1291,12 +1144,10 @@ function BikeContextPanel({
   ctx,
   reload,
   showToast,
-  workerMode = false,
 }: {
   ctx: BikeContext;
   reload: () => Promise<void>;
   showToast: (s: string) => void;
-  workerMode?: boolean;
 }) {
   const active = ctx.active_rentals[0];
   return (
@@ -1319,7 +1170,7 @@ function BikeContextPanel({
           <div>
             {active ? `#${active.client_id} ${active.client_name}` : "-"}
           </div>
-          {!workerMode && <><div>Telegram</div>
+          <div>Telegram</div>
           <div>
             {active
               ? active.private_telegram_id ||
@@ -1329,7 +1180,7 @@ function BikeContextPanel({
               : "-"}
           </div>
           <div>Цена</div>
-          <div>{active ? money(active.price) : "-"}</div></>}
+          <div>{active ? money(active.price) : "-"}</div>
           <div>Долг</div>
           <div className="money">
             {money(ctx.bike.debt_total)} / {ctx.bike.open_debts} начисл.
@@ -1340,7 +1191,7 @@ function BikeContextPanel({
               ? ctx.batteries.map((b) => `#${b.id}`).join(", ")
               : "-"}
           </div>
-          {!workerMode && <><div>Правила оплаты</div>
+          <div>Правила оплаты</div>
           <div>
             {ctx.payment_rules.some((r) => r.is_active) ? (
               <>
@@ -1352,28 +1203,33 @@ function BikeContextPanel({
             ) : (
               <span className="warnText">нет active правила</span>
             )}
-          </div></>}
-        </div>
-      </div>
-      {workerMode ? (
-        <div className="card">
-          <h3>⚠️ Долги по велику</h3>
-          <div className="list">
-            {ctx.charges.filter((d) => !d.is_excluded && Number(d.debt_left || 0) > 0).map((d) => (
-              <div className="item" key={d.charge_id}>
-                <div className="space"><b>{d.category_label || d.charge_type || `charge #${d.charge_id}`}</b><span className="money dangerText">{money(d.debt_left)}</span></div>
-                <div className="small muted">до {d.due_date} · charge #{d.charge_id}</div>
-              </div>
-            ))}
-            {!ctx.charges.some((d) => !d.is_excluded && Number(d.debt_left || 0) > 0) && <p className="okText">Открытых долгов нет.</p>}
           </div>
         </div>
-      ) : (
-        <BikeDebtBlock debts={ctx.charges} showToast={showToast} reload={reload} />
-      )}
-      {!workerMode && <PaymentRuleBlock bike={ctx.bike} active={active} showToast={showToast} reload={reload} />}
-      {!workerMode && <RentalContractForm bike={ctx.bike} active={active} showToast={showToast} reload={reload} />}
-      {!workerMode && <LinkBlock active={active} showToast={showToast} reload={reload} />}
+      </div>
+      <BikeDebtBlock
+        debts={ctx.charges}
+        showToast={showToast}
+        reload={reload}
+      />
+      <RentalActionsBlock
+        bike={ctx.bike}
+        active={active}
+        showToast={showToast}
+        reload={reload}
+      />
+      <PaymentRuleBlock
+        bike={ctx.bike}
+        active={active}
+        showToast={showToast}
+        reload={reload}
+      />
+      <RentalContractForm
+        bike={ctx.bike}
+        active={active}
+        showToast={showToast}
+        reload={reload}
+      />
+      <LinkBlock active={active} showToast={showToast} reload={reload} />
     </>
   );
 }
@@ -1798,7 +1654,206 @@ function PaymentRuleBlock({
   );
 }
 
-// v25: legacy RentalActionsBlock removed; RentalContractForm is the only contract UI.
+function RentalActionsBlock({
+  bike,
+  active,
+  showToast,
+  reload,
+}: {
+  bike: BikeCard;
+  active: any;
+  showToast: (s: string) => void;
+  reload: () => Promise<void>;
+}) {
+  const [clients, setClients] = useState<Client[]>([]);
+  const [clientId, setClientId] = useState("");
+  const [price, setPrice] = useState(
+    String(active?.price || bike.active_price || 6000),
+  );
+  const [start, setStart] = useState(today());
+  const [deposit, setDeposit] = useState(String(active?.deposit || 0));
+  const [chargers, setChargers] = useState(
+    String(active?.charger_quantity || 1),
+  );
+  const [notes, setNotes] = useState("");
+  const [closeStatus, setCloseStatus] = useState("free");
+  useEffect(() => {
+    api<Client[]>("/api/admin/clients")
+      .then(setClients)
+      .catch(() => null);
+  }, []);
+  async function create() {
+    await api("/api/admin/rentals/new", {
+      method: "POST",
+      body: JSON.stringify({
+        bike_id: bike.id,
+        client_id: Number(clientId),
+        price: Number(price),
+        start_date: start,
+        deposit: Number(deposit),
+        charger_quantity: Number(chargers),
+        rental_type: "monthly",
+        notes,
+      }),
+    });
+    showToast("Аренда создана");
+    await reload();
+  }
+  function askDepositRefund(action: "close" | "replace") {
+    const oldDeposit = Number(active?.deposit || 0);
+    const label = action === "close" ? "закрытием аренды" : "переоформлением договора";
+    const raw = prompt(
+      `Сколько депозита возвращено старому клиенту перед ${label}?\n\nДепозит по старому договору: ${money(oldDeposit)}\nЕсли ничего не возвращали — оставь 0.`,
+      "0",
+    );
+    if (raw === null) return null;
+    const value = Number(String(raw).replace(",", ".") || 0);
+    if (!Number.isFinite(value) || value < 0) {
+      showToast("Сумма возврата депозита некорректна");
+      return null;
+    }
+    return value;
+  }
+  async function close() {
+    if (!confirm(`Закрыть active-аренду велика #${bike.id}?`)) return;
+    const depositRefund = askDepositRefund("close");
+    if (depositRefund === null) return;
+    await api("/api/admin/rentals/close", {
+      method: "POST",
+      body: JSON.stringify({
+        bike_id: bike.id,
+        end_date: today(),
+        bike_status: closeStatus,
+        deposit_refund: depositRefund,
+        notes,
+      }),
+    });
+    showToast(depositRefund > 0 ? `Аренда закрыта, возврат депозита ${money(depositRefund)}` : "Аренда закрыта");
+    await reload();
+  }
+  async function replace() {
+    if (
+      !confirm(`Переоформить велик #${bike.id} на нового клиента #${clientId}?`)
+    )
+      return;
+    const depositRefund = askDepositRefund("replace");
+    if (depositRefund === null) return;
+    await api("/api/admin/rentals/replace", {
+      method: "POST",
+      body: JSON.stringify({
+        bike_id: bike.id,
+        new_client_id: Number(clientId),
+        price: Number(price),
+        start_date: start,
+        deposit: Number(deposit),
+        charger_quantity: Number(chargers),
+        rental_type: "monthly",
+        deposit_refund: depositRefund,
+        notes,
+      }),
+    });
+    showToast(depositRefund > 0 ? `Новый договор создан, возврат депозита ${money(depositRefund)}` : "Новый договор создан");
+    await reload();
+  }
+  return (
+    <div className="card">
+      <h3 className="section-title">📄 Аренда</h3>
+      <div className="formgrid">
+        <label>
+          Клиент
+          <select
+            className="select"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+          >
+            <option value="">выбери клиента</option>
+            {clients.map((c) => (
+              <option key={c.id} value={c.id}>
+                #{c.id} {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Цена
+          <input
+            className="input"
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+          />
+        </label>
+        <label>
+          Дата начала
+          <input
+            className="input"
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+          />
+        </label>
+        <label>
+          Депозит
+          <input
+            className="input"
+            type="number"
+            value={deposit}
+            onChange={(e) => setDeposit(e.target.value)}
+          />
+        </label>
+        <label>
+          Зарядки
+          <input
+            className="input"
+            type="number"
+            value={chargers}
+            onChange={(e) => setChargers(e.target.value)}
+          />
+        </label>
+        <label>
+          Статус после закрытия
+          <select
+            className="select"
+            value={closeStatus}
+            onChange={(e) => setCloseStatus(e.target.value)}
+          >
+            <option value="free">free</option>
+            <option value="sold">sold</option>
+            <option value="repair">repair</option>
+            <option value="waiting">waiting</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        Заметка
+        <textarea
+          className="textarea"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+      </label>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button
+          className="btn primary"
+          disabled={!!active || !clientId}
+          onClick={create}
+        >
+          ➕ Новая аренда
+        </button>
+        <button className="btn warn" disabled={!active} onClick={close}>
+          📄 Закрыть аренду
+        </button>
+        <button
+          className="btn primary"
+          disabled={!active || !clientId}
+          onClick={replace}
+        >
+          ♻️ Новый договор
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function LinkBlock({
   active,
@@ -2610,7 +2665,7 @@ function QuickPaymentBlock({
 }
 
 
-function AssetsTab({ showToast, workerMode = false }: { showToast: (s: string) => void; workerMode?: boolean }) {
+function AssetsTab({ showToast }: { showToast: (s: string) => void }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   async function load() {
@@ -2629,8 +2684,8 @@ function AssetsTab({ showToast, workerMode = false }: { showToast: (s: string) =
   const rows = data?.recent || data?.transactions || [];
   return (
     <div className="grid">
-      <AssetOperationsBlock showToast={showToast} reload={load} workerMode={workerMode} />
-      {!workerMode && <div className="card wide">
+      <AssetOperationsBlock showToast={showToast} reload={load} />
+      <div className="card wide">
         <div className="space">
           <h3>📜 История активов</h3>
           <button className="btn" onClick={() => load()} disabled={loading}>{loading ? "Загрузка..." : "Обновить"}</button>
@@ -2655,12 +2710,12 @@ function AssetsTab({ showToast, workerMode = false }: { showToast: (s: string) =
             </tbody>
           </table>
         </div>
-      </div>}
+      </div>
     </div>
   );
 }
 
-function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showToast: (s: string) => void; reload: () => Promise<void>; workerMode?: boolean }) {
+function AssetOperationsBlock({ showToast, reload }: { showToast: (s: string) => void; reload: () => Promise<void> }) {
   const [assetType, setAssetType] = useState("bike");
   const [action, setAction] = useState("purchase");
   const [date, setDate] = useState(today());
@@ -2675,7 +2730,6 @@ function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showT
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [last, setLast] = useState<any>(null);
-  useEffect(() => { if (workerMode && assetType !== "bike") setAssetType("bike"); }, [workerMode, assetType]);
 
   async function submit() {
     setError("");
@@ -2731,7 +2785,7 @@ function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showT
           Актив
           <select className="select" value={assetType} onChange={(e) => setAssetType(e.target.value)}>
             <option value="bike">Велик</option>
-            {!workerMode && <option value="battery">Батарея</option>}
+            <option value="battery">Батарея</option>
           </select>
         </label>
         <label>

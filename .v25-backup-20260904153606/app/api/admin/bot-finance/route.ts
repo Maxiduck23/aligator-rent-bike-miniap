@@ -20,23 +20,14 @@ function diffDays(from: string, to: string) {
   return Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000) + 1;
 }
 
-function isVoided(row: any) {
-  const action = String(row.action || '').toLowerCase();
-  const eventType = String(row.event_type || '').toLowerCase();
-  const verification = String(row.verification_status || '').toLowerCase();
-  return Boolean(row.voided_at) || action === 'void' || eventType === 'payment_reversed' || verification === 'reversed';
-}
-
 function classify(row: any) {
-  if (isVoided(row)) return { kind: 'void', cash: 0, nominal: 0 };
   const eventType = String(row.event_type || '');
   const action = String(row.action || '');
   const sign = String(row.sign || '');
   const amount = Number(row.amount || row.nominal_amount || 0);
-  if (eventType === 'charge_created' || action === 'debt' || action === 'add_debt') {
+  if (eventType === 'charge_created' || action === 'debt' || action === 'add_debt' || row.affects_cash === false) {
     return { kind: 'debt_created', cash: 0, nominal: Number(row.nominal_amount || amount) };
   }
-  if (row.affects_cash === false) return { kind: 'other', cash: 0, nominal: amount };
   if (eventType === 'expense_paid' || sign === 'expense') {
     return { kind: 'expense', cash: Math.abs(Number(row.cash_amount ?? amount)), nominal: amount };
   }
@@ -89,7 +80,7 @@ export async function GET(req: NextRequest) {
         if (c.kind === 'income') acc.income += c.cash;
         if (c.kind === 'expense') acc.expense += c.cash;
         if (c.kind === 'debt_created') acc.debt_created += c.nominal;
-        if (c.kind !== 'void') acc.count += 1;
+        acc.count += 1;
         return acc;
       },
       { income: 0, expense: 0, debt_created: 0, count: 0 },
@@ -98,7 +89,6 @@ export async function GET(req: NextRequest) {
     const byCategoryMap = new Map<string, any>();
     for (const r of rows) {
       const c = classify(r);
-      if (c.kind === 'void' || c.kind === 'other') continue;
       const key = `${c.kind}:${r.category}`;
       const prev = byCategoryMap.get(key) || {
         kind: c.kind,

@@ -1,11 +1,11 @@
 import { NextRequest } from 'next/server';
 import { fail, ok } from '@/lib/http';
-import { requireStaff } from '@/lib/telegram';
+import { requireAdmin } from '@/lib/telegram';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = requireStaff(req);
+    requireAdmin(req);
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get('q') || '').trim();
     const status = searchParams.get('status');
@@ -23,27 +23,7 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await query.limit(300);
     if (error) throw error;
-    const rows = data || [];
-    if (auth.isWorker) {
-      return ok(rows.map((row: any) => ({
-        id: row.id,
-        bike_label: row.bike_label,
-        brand: row.brand,
-        model: row.model,
-        status: row.status,
-        active_rental_id: row.active_rental_id,
-        active_client_id: row.active_client_id,
-        client_name: row.client_name,
-        client_telegram_id: null,
-        private_telegram_id: null,
-        active_price: null,
-        debt_total: Number(row.debt_total || 0),
-        open_debts: Number(row.open_debts || 0),
-        active_payment_rules: 0,
-        warnings: [],
-      })));
-    }
-    return ok(rows);
+    return ok(data || []);
   } catch (e) {
     return fail(e);
   }
