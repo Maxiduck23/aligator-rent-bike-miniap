@@ -1,4 +1,5 @@
-﻿"use client";
+"use client";
+// v26-worker-ops-contract
 
 import RentalContractForm from "@/components/rentals/RentalContractForm";
 import FinanceRangePanel from "@/components/finance/FinanceRangePanel";
@@ -719,7 +720,7 @@ function AdminApp({ showToast }: { showToast: (s: string) => void }) {
   );
 }
 
-type WorkerTab = "bikes" | "batteries" | "assets" | "debts" | "clients";
+type WorkerTab = "bikes" | "batteries" | "assets" | "debts" | "requests" | "clients";
 
 function WorkerApp({ showToast }: { showToast: (s: string) => void }) {
   const [tab, setTab] = useState<WorkerTab>("bikes");
@@ -731,12 +732,14 @@ function WorkerApp({ showToast }: { showToast: (s: string) => void }) {
         <button className={`tab ${tab === "batteries" ? "active" : ""}`} onClick={() => setTab("batteries")}>🔋 Батареи</button>
         <button className={`tab ${tab === "assets" ? "active" : ""}`} onClick={() => setTab("assets")}>🧾 Активы</button>
         <button className={`tab ${tab === "debts" ? "active" : ""}`} onClick={() => setTab("debts")}>⚠️ Долги</button>
+        <button className={`tab ${tab === "requests" ? "active" : ""}`} onClick={() => setTab("requests")}>📝 Запросы</button>
         <button className={`tab ${tab === "clients" ? "active" : ""}`} onClick={() => setTab("clients")}>👤 Клиенты</button>
       </div>
       {tab === "bikes" && <BikesTab showToast={showToast} initialBikeId={focusBikeId} workerMode />}
       {tab === "batteries" && <BatteryMapV23 showToast={showToast} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
       {tab === "assets" && <AssetsTab showToast={showToast} workerMode />}
       {tab === "debts" && <WorkerDebtsTab showToast={showToast} />}
+      {tab === "requests" && <RequestsBoardV22 showToast={showToast} workerMode />}
       {tab === "clients" && <WorkerClientsTab showToast={showToast} />}
     </>
   );
@@ -802,64 +805,46 @@ function WorkerClientsTab({ showToast }: { showToast: (s: string) => void }) {
   const [docNumber, setDocNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [invite, setInvite] = useState<any>(null);
 
-  async function load() {
-    setRows(await api<Client[]>(`/api/admin/clients?q=${encodeURIComponent(q)}`));
-  }
+  async function load() { setRows(await api<Client[]>(`/api/admin/clients?q=${encodeURIComponent(q)}`)); }
   useEffect(() => { load().catch((e) => showToast(e.message)); }, []);
 
   async function create() {
     if (!name.trim()) return showToast("Укажи имя клиента");
     setBusy(true);
     try {
-      await api("/api/admin/clients", {
-        method: "POST",
-        body: JSON.stringify({
-          name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
-          address: address.trim() || null, doc_type: docType || null,
-          doc_number: docNumber.trim() || null, notes: notes.trim() || null,
-        }),
-      });
+      await api("/api/admin/clients", { method: "POST", body: JSON.stringify({ name:name.trim(), phone:phone.trim()||null, email:email.trim()||null, address:address.trim()||null, doc_type:docType||null, doc_number:docNumber.trim()||null, notes:notes.trim()||null }) });
       setName(""); setPhone(""); setEmail(""); setAddress(""); setDocType("ID card"); setDocNumber(""); setNotes("");
-      showToast("Клиент добавлен. Закрытые данные после сохранения рабочему не показываются.");
-      await load();
+      showToast("Клиент добавлен"); await load();
     } finally { setBusy(false); }
   }
 
-  return (
-    <div className="grid">
-      <div className="card">
-        <h3>➕ Добавить клиента</h3>
-        <p className="small muted">Работник может записать данные договора при создании клиента. После сохранения список возвращает только ID, имя, телефон и активные велики; адрес, документ, e-mail, заметки, профили и финансовая история скрыты.</p>
-        <label>Имя и фамилия<input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <div className="formgrid">
-          <label>Телефон<input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+420..." /></label>
-          <label>E-mail<input className="input" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-        </div>
-        <label>Адрес<input className="input" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
-        <div className="formgrid">
-          <label>Тип документа<select className="select" value={docType} onChange={(e) => setDocType(e.target.value)}><option value="ID card">ID card</option><option value="passport">Паспорт</option><option value="driver_license">Права</option><option value="visa">Виза / pobyt</option><option value="other">Другое</option></select></label>
-          <label>Номер документа<input className="input" value={docNumber} onChange={(e) => setDocNumber(e.target.value)} /></label>
-        </div>
-        <label>Заметка<textarea className="textarea" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-        <button className="btn primary" disabled={busy || !name.trim()} onClick={create}>{busy ? "Добавляю..." : "Добавить клиента"}</button>
-      </div>
-      <div className="card">
-        <h3>👤 Клиенты</h3>
-        <div className="row">
-          <input className="input" placeholder="поиск по имени / телефону / ID" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load().catch((er) => showToast(er.message))} />
-          <button className="btn" onClick={() => load().catch((e) => showToast(e.message))}>Найти</button>
-        </div>
-        <div className="list" style={{ marginTop: 10 }}>
-          {rows.map((c) => <div className="item" key={c.id}>
-            <div className="space"><b>#{c.id} {c.name}</b><span className="pill">{(c.active_bike_ids || []).length ? `🚲 ${(c.active_bike_ids || []).join(", ")}` : "без велика"}</span></div>
-            <div className="small muted">📞 {c.phone || "-"}</div>
-          </div>)}
-          {!rows.length && <p className="muted">Клиенты не найдены.</p>}
-        </div>
-      </div>
+  async function makeInvite(clientId: number) {
+    setBusy(true); setInvite(null);
+    try {
+      const data = await api<any>("/api/admin/invites", { method:"POST", body:JSON.stringify({client_id:clientId,notes:"worker client invite v26"}) });
+      setInvite(data);
+      try { await navigator.clipboard?.writeText(data.link); showToast("TG ссылка создана и скопирована"); }
+      catch { showToast("TG ссылка создана"); }
+    } catch (e:any) { showToast(e.message || "Не получилось создать TG ссылку"); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="grid">
+    <div className="card"><h3>➕ Добавить клиента</h3><p className="small muted">Работник может записать данные клиента, а затем выдать ему персональную TG ссылку.</p>
+      <label>Имя и фамилия<input className="input" value={name} onChange={(e)=>setName(e.target.value)} /></label>
+      <div className="formgrid"><label>Телефон<input className="input" value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="+420..." /></label><label>E-mail<input className="input" value={email} onChange={(e)=>setEmail(e.target.value)} /></label></div>
+      <label>Адрес<input className="input" value={address} onChange={(e)=>setAddress(e.target.value)} /></label>
+      <div className="formgrid"><label>Тип документа<select className="select" value={docType} onChange={(e)=>setDocType(e.target.value)}><option value="ID card">ID card</option><option value="passport">Паспорт</option><option value="driver_license">Права</option><option value="visa">Виза / pobyt</option><option value="other">Другое</option></select></label><label>Номер документа<input className="input" value={docNumber} onChange={(e)=>setDocNumber(e.target.value)} /></label></div>
+      <label>Заметка<textarea className="textarea" value={notes} onChange={(e)=>setNotes(e.target.value)} /></label>
+      <button className="btn primary" disabled={busy||!name.trim()} onClick={create}>{busy?"Сохраняю...":"Добавить клиента"}</button>
     </div>
-  );
+    <div className="card"><h3>👤 Клиенты</h3><div className="row"><input className="input" placeholder="поиск по имени / телефону / ID" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&load().catch((er)=>showToast(er.message))} /><button className="btn" onClick={()=>load().catch((e)=>showToast(e.message))}>Найти</button></div>
+      <div className="list" style={{marginTop:10}}>{rows.map((c)=><div className="item" key={c.id}><div className="space"><b>#{c.id} {c.name}</b><span className="pill">{(c.active_bike_ids||[]).length?`🚲 ${(c.active_bike_ids||[]).join(", ")}`:"без велика"}</span></div><div className="small muted">📞 {c.phone||"-"}</div><button className="btn" style={{marginTop:8}} disabled={busy} onClick={()=>makeInvite(c.id)}>🔑 TG ссылка</button></div>)}{!rows.length&&<p className="muted">Клиенты не найдены.</p>}</div>
+      {invite&&<div className="item ok" style={{marginTop:12}}><b>TG ссылка готова</b><div className="small" style={{wordBreak:"break-all"}}>{invite.link}</div><div className="row" style={{marginTop:8}}><button className="btn" onClick={()=>navigator.clipboard?.writeText(invite.link)}>Скопировать</button><a className="btn" href={invite.link} target="_blank" rel="noreferrer">Открыть</a></div></div>}
+    </div>
+  </div>;
 }
 
 function AdminMenuTab({ setTab }: { setTab: (tab: AdminTab) => void }) {
@@ -1254,7 +1239,7 @@ function BikesTab({ showToast, initialBikeId, workerMode = false }: { showToast:
                 {b.client_name
                   ? `Клиент: ${b.client_name}`
                   : "Без active клиента"}{" "}
-                · долг {money(b.debt_total)}
+                · аренда {b.active_price != null ? money(b.active_price) : "-"} · долг {money(b.debt_total)}
               </div>
               <div className="row" style={{ marginTop: 6 }}>
                 <WarningPills warnings={b.warnings} />
@@ -1302,78 +1287,22 @@ function BikeContextPanel({
   return (
     <>
       <div className="card">
-        <div className="space">
-          <h2 className="section-title">{ctx.bike.bike_label}</h2>
-          <span className="pill">{ctx.bike.status}</span>
-        </div>
-        <div className="row">
-          <WarningPills warnings={ctx.bike.warnings} />
-        </div>
-        <hr className="hr" />
+        <div className="space"><h2 className="section-title">{ctx.bike.bike_label}</h2><span className="pill">{ctx.bike.status}</span></div>
+        <div className="row"><WarningPills warnings={ctx.bike.warnings} /></div><hr className="hr" />
         <div className="kv">
-          <div>Active rental</div>
-          <div>
-            {active ? `#${active.id}` : <span className="warnText">нет</span>}
-          </div>
-          <div>Клиент</div>
-          <div>
-            {active ? `#${active.client_id} ${active.client_name}` : "-"}
-          </div>
-          {!workerMode && <><div>Telegram</div>
-          <div>
-            {active
-              ? active.private_telegram_id ||
-                active.client_telegram_id || (
-                  <span className="dangerText">не привязан</span>
-                )
-              : "-"}
-          </div>
-          <div>Цена</div>
-          <div>{active ? money(active.price) : "-"}</div></>}
-          <div>Долг</div>
-          <div className="money">
-            {money(ctx.bike.debt_total)} / {ctx.bike.open_debts} начисл.
-          </div>
-          <div>Батареи</div>
-          <div>
-            {ctx.batteries.length
-              ? ctx.batteries.map((b) => `#${b.id}`).join(", ")
-              : "-"}
-          </div>
-          {!workerMode && <><div>Правила оплаты</div>
-          <div>
-            {ctx.payment_rules.some((r) => r.is_active) ? (
-              <>
-                {ctx.payment_rules.filter((r) => r.is_active).map((r) => `#${r.id} active`).join(", ")}
-                {ctx.payment_rules.filter((r) => !r.is_active).length > 0 && (
-                  <div className="small muted">История скрыта: {ctx.payment_rules.filter((r) => !r.is_active).length} старых правил</div>
-                )}
-              </>
-            ) : (
-              <span className="warnText">нет active правила</span>
-            )}
-          </div></>}
+          <div>Active rental</div><div>{active ? `#${active.id}` : <span className="warnText">нет</span>}</div>
+          <div>Клиент</div><div>{active ? `#${active.client_id} ${active.client_name}` : "-"}</div>
+          {!workerMode && <><div>Telegram</div><div>{active ? active.private_telegram_id || active.client_telegram_id || <span className="dangerText">не привязан</span> : "-"}</div></>}
+          <div>Аренда / месяц</div><div><b>{active ? money(active.recurring_rent ?? active.price) : "-"}</b></div>
+          <div>Долг</div><div className="money">{money(ctx.bike.debt_total)} / {ctx.bike.open_debts} начисл.</div>
+          <div>Батареи</div><div>{ctx.batteries.length ? ctx.batteries.map((b) => `#${b.id}`).join(", ") : "-"}</div>
+          {!workerMode && <><div>Правила оплаты</div><div>{ctx.payment_rules.some((r)=>r.is_active)?ctx.payment_rules.filter((r)=>r.is_active).map((r)=>`#${r.id} active`).join(", "):<span className="warnText">нет active правила</span>}</div></>}
         </div>
       </div>
-      {workerMode ? (
-        <div className="card">
-          <h3>⚠️ Долги по велику</h3>
-          <div className="list">
-            {ctx.charges.filter((d) => !d.is_excluded && Number(d.debt_left || 0) > 0).map((d) => (
-              <div className="item" key={d.charge_id}>
-                <div className="space"><b>{d.category_label || d.charge_type || `charge #${d.charge_id}`}</b><span className="money dangerText">{money(d.debt_left)}</span></div>
-                <div className="small muted">до {d.due_date} · charge #{d.charge_id}</div>
-              </div>
-            ))}
-            {!ctx.charges.some((d) => !d.is_excluded && Number(d.debt_left || 0) > 0) && <p className="okText">Открытых долгов нет.</p>}
-          </div>
-        </div>
-      ) : (
-        <BikeDebtBlock debts={ctx.charges} showToast={showToast} reload={reload} />
-      )}
+      {workerMode ? <div className="card"><h3>⚠️ Долги по велику</h3><div className="list">{ctx.charges.filter((d)=>!d.is_excluded&&Number(d.debt_left||0)>0).map((d)=><div className="item" key={d.charge_id}><div className="space"><b>{d.category_label||d.charge_type||`charge #${d.charge_id}`}</b><span className="money dangerText">{money(d.debt_left)}</span></div><div className="small muted">до {d.due_date} · charge #{d.charge_id}</div></div>)}{!ctx.charges.some((d)=>!d.is_excluded&&Number(d.debt_left||0)>0)&&<p className="okText">Открытых долгов нет.</p>}</div></div> : <BikeDebtBlock debts={ctx.charges} showToast={showToast} reload={reload} />}
       {!workerMode && <PaymentRuleBlock bike={ctx.bike} active={active} showToast={showToast} reload={reload} />}
-      {!workerMode && <RentalContractForm bike={ctx.bike} active={active} showToast={showToast} reload={reload} />}
-      {!workerMode && <LinkBlock active={active} showToast={showToast} reload={reload} />}
+      <RentalContractForm bike={ctx.bike} active={active} showToast={showToast} reload={reload} workerMode={workerMode} />
+      <LinkBlock active={active} showToast={showToast} reload={reload} workerMode={workerMode} />
     </>
   );
 }
@@ -1804,145 +1733,24 @@ function LinkBlock({
   active,
   showToast,
   reload,
+  workerMode = false,
 }: {
   active: any;
   showToast: (s: string) => void;
   reload: () => Promise<void>;
+  workerMode?: boolean;
 }) {
-  const [telegramId, setTelegramId] = useState("");
-  const [invite, setInvite] = useState<any>(null);
-  const [inviteError, setInviteError] = useState("");
-  const [inviteLoading, setInviteLoading] = useState(false);
-
-  async function copyText(text: string, label = "Скопировано") {
-    try {
-      await navigator.clipboard?.writeText(text);
-      showToast(label);
-    } catch {
-      window.prompt("Скопируй вручную", text);
-    }
-  }
-
-  async function link() {
-    if (!active) return showToast("Нет active клиента");
-    try {
-      await api("/api/admin/link-telegram", {
-        method: "POST",
-        body: JSON.stringify({
-          client_id: active.client_id,
-          telegram_id: Number(telegramId),
-        }),
-      });
-      showToast("Telegram привязан");
-      await reload();
-    } catch (e: any) {
-      showToast(e.message || "Ошибка привязки Telegram");
-    }
-  }
-
-  async function createInvite(clientId: number | null) {
-    if (!clientId) {
-      setInviteError("Нет active клиента: сначала выбери велик с активной арендой или создай аренду.");
-      return;
-    }
-    setInvite(null);
-    setInviteError("");
-    setInviteLoading(true);
-    try {
-      const data = await api<any>("/api/admin/invites", {
-        method: "POST",
-        body: JSON.stringify({
-          client_id: clientId,
-          notes: "client entry link from admin miniapp",
-        }),
-      });
-      setInvite(data);
-      await copyText(data.link, "Ссылка создана и скопирована");
-    } catch (e: any) {
-      const message = e.message || "Не получилось создать ключ";
-      setInviteError(message);
-      showToast(message);
-    } finally {
-      setInviteLoading(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3 className="section-title">🔗 Telegram / вход клиента</h3>
-      <p className="small muted">
-        Ключ — это ссылка в Telegram-бота для уже существующего клиента. После перехода бот должен обработать <span className="code">/start KEY</span>, привязать Telegram ID и дать кнопку входа в клиентский Mini App.
-      </p>
-      {!active && <p className="dangerText">Нет active-аренды — ссылку входа создать нельзя.</p>}
-      {active && (
-        <p className="small muted">
-          Active клиент: #{active.client_id} {active.client_name || ""}
-        </p>
-      )}
-      <div className="formgrid">
-        <label>
-          Telegram ID
-          <input
-            className="input"
-            value={telegramId}
-            onChange={(e) => setTelegramId(e.target.value)}
-            placeholder="123456789"
-          />
-        </label>
-        <button
-          className="btn primary"
-          disabled={!active || !telegramId}
-          onClick={link}
-        >
-          Привязать к active клиенту
-        </button>
-      </div>
-      <div className="row" style={{ marginTop: 10 }}>
-        <button
-          className="btn primary"
-          disabled={!active || inviteLoading}
-          onClick={() => createInvite(active?.client_id || null)}
-        >
-          {inviteLoading ? "Создаю..." : "🔑 Создать ссылку входа для active клиента"}
-        </button>
-      </div>
-      {inviteError && <p className="dangerText">{inviteError}</p>}
-      {invite && (
-        <div className="item ok" style={{ marginTop: 10 }}>
-          <div className="space">
-            <b>Ссылка создана</b>
-            <span className="pill ok">active</span>
-          </div>
-          <div>
-            Клиент: <span className="code">#{invite.client_id || active?.client_id}</span>
-          </div>
-          <div>
-            Ключ: <span className="code">{invite.invite_key}</span>
-          </div>
-          <div className="small muted" style={{ wordBreak: "break-all" }}>{invite.link}</div>
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn" onClick={() => copyText(invite.link, "Ссылка скопирована")}>
-              Скопировать ссылку
-            </button>
-            <button className="btn" onClick={() => copyText(invite.invite_key, "Ключ скопирован")}>
-              Скопировать ключ
-            </button>
-            <a className="btn" href={invite.link} target="_blank" rel="noreferrer">
-              Открыть https
-            </a>
-            {invite.tg_link && (
-              <a className="btn" href={invite.tg_link}>
-                Открыть tg://
-              </a>
-            )}
-          </div>
-          <p className="small muted">
-            Если при переходе бот ничего не отвечает — это не ошибка Mini App. Нужно обновить VPS-бот: обработчик <span className="code">/start KEY</span> должен искать ключ в <span className="code">contract_invites</span> и присылать клиентскую кнопку входа.
-          </p>
-        </div>
-      )}
-    </div>
-  );
+  const [telegramId,setTelegramId]=useState("");
+  const [invite,setInvite]=useState<any>(null);
+  const [inviteError,setInviteError]=useState("");
+  const [inviteLoading,setInviteLoading]=useState(false);
+  async function copyText(text:string,label="Скопировано"){try{await navigator.clipboard?.writeText(text);showToast(label)}catch{window.prompt("Скопируй вручную",text)}}
+  async function link(){if(!active)return showToast("Нет active клиента");try{await api("/api/admin/link-telegram",{method:"POST",body:JSON.stringify({client_id:active.client_id,telegram_id:Number(telegramId)})});showToast("Telegram привязан");await reload()}catch(e:any){showToast(e.message||"Ошибка привязки Telegram")}}
+  async function createInvite(clientId:number|null){if(!clientId){setInviteError("Нет active клиента: сначала создай договор.");return}setInvite(null);setInviteError("");setInviteLoading(true);try{const data=await api<any>("/api/admin/invites",{method:"POST",body:JSON.stringify({client_id:clientId,notes:workerMode?"worker invite v26":"admin invite v26"})});setInvite(data);await copyText(data.link,"TG ссылка создана и скопирована")}catch(e:any){const message=e.message||"Не получилось создать TG ссылку";setInviteError(message);showToast(message)}finally{setInviteLoading(false)}}
+  return <div className="card"><h3 className="section-title">🔗 Telegram / вход клиента</h3><p className="small muted">Персональная ссылка через бота для active клиента.</p>{!active&&<p className="dangerText">Нет active-аренды — ссылку создать нельзя.</p>}{active&&<p className="small muted">Active клиент: #{active.client_id} {active.client_name||""}</p>}
+    {!workerMode&&<div className="formgrid"><label>Telegram ID<input className="input" value={telegramId} onChange={(e)=>setTelegramId(e.target.value)} placeholder="123456789" /></label><button className="btn primary" disabled={!active||!telegramId} onClick={link}>Привязать к active клиенту</button></div>}
+    <div className="row" style={{marginTop:10}}><button className="btn primary" disabled={!active||inviteLoading} onClick={()=>createInvite(active?.client_id||null)}>{inviteLoading?"Создаю...":"🔑 Создать TG ссылку"}</button></div>{inviteError&&<p className="dangerText">{inviteError}</p>}{invite&&<div className="item ok" style={{marginTop:10}}><div className="space"><b>Ссылка создана</b><span className="pill ok">active</span></div><div>Клиент: <span className="code">#{invite.client_id||active?.client_id}</span></div><div>Ключ: <span className="code">{invite.invite_key}</span></div><div className="small muted" style={{wordBreak:"break-all"}}>{invite.link}</div><div className="row" style={{marginTop:8}}><button className="btn" onClick={()=>copyText(invite.link,"Ссылка скопирована")}>Скопировать ссылку</button><a className="btn" href={invite.link} target="_blank" rel="noreferrer">Открыть</a></div></div>}
+  </div>;
 }
 
 function BalancesTab({ showToast }: { showToast: (s: string) => void }) {
