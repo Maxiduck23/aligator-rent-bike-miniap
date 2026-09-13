@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { roleTestHeaders } from "@/lib/clientRoleTest";
 
 type Props = {
   bike: any;
@@ -22,6 +23,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     headers: {
       "Content-Type": "application/json",
       "x-telegram-init-data": tgInitData(),
+      ...roleTestHeaders(),
       ...(options.headers || {}),
     },
   });

@@ -14,9 +14,16 @@ export type AppRole = 'admin' | 'worker' | 'client';
 export type AuthContext = {
   telegramId: number;
   user: TelegramUser | null;
+
+  // Effective role for this request.
   isAdmin: boolean;
   isWorker: boolean;
   role: AppRole;
+
+  // Real role before optional test downgrade.
+  realRole: AppRole;
+  isRoleOverride: boolean;
+  canTestWorker: boolean;
 };
 
 function parseIds(raw: string): Set<number> {
@@ -32,8 +39,6 @@ function adminIds(): Set<number> {
   return parseIds(process.env.ADMIN_IDS || '');
 }
 
-// v25: first worker account. WORKER_IDS can add more IDs without code changes.
-// Admin always wins if an ID appears in both sets.
 const BUILTIN_WORKER_IDS = new Set<number>([527159436]);
 
 function workerIds(): Set<number> {
@@ -42,10 +47,35 @@ function workerIds(): Set<number> {
   return result;
 }
 
-function roleForTelegramId(telegramId: number): AppRole {
+// v27: only these REAL admins may downgrade their own effective role to worker.
+// This cannot grant admin access to anyone.
+const BUILTIN_ROLE_TESTER_IDS = new Set<number>([812040832]);
+
+function roleTesterIds(): Set<number> {
+  const result = new Set<number>(BUILTIN_ROLE_TESTER_IDS);
+  for (const id of parseIds(process.env.ROLE_TESTER_IDS || '')) result.add(id);
+  return result;
+}
+
+function realRoleForTelegramId(telegramId: number): AppRole {
   if (adminIds().has(telegramId)) return 'admin';
   if (workerIds().has(telegramId)) return 'worker';
   return 'client';
+}
+
+function effectiveRoleForRequest(
+  req: NextRequest,
+  telegramId: number,
+  realRole: AppRole
+): { role: AppRole; isOverride: boolean; canTestWorker: boolean } {
+  const canTestWorker = realRole === 'admin' && roleTesterIds().has(telegramId);
+  const requested = (req.headers.get('x-test-role') || '').trim().toLowerCase();
+
+  if (canTestWorker && requested === 'worker') {
+    return { role: 'worker', isOverride: true, canTestWorker: true };
+  }
+
+  return { role: realRole, isOverride: false, canTestWorker };
 }
 
 function timingSafeEqualHex(a: string, b: string): boolean {
@@ -59,7 +89,11 @@ function timingSafeEqualHex(a: string, b: string): boolean {
   }
 }
 
-export function validateTelegramInitData(initData: string, botToken: string, maxAgeSeconds = 86400): { user: TelegramUser | null } {
+export function validateTelegramInitData(
+  initData: string,
+  botToken: string,
+  maxAgeSeconds = 86400
+): { user: TelegramUser | null } {
   if (!initData) throw new Error('No Telegram initData');
   if (!botToken) throw new Error('No TELEGRAM_BOT_TOKEN');
 
@@ -85,7 +119,10 @@ export function validateTelegramInitData(initData: string, botToken: string, max
     .join('\n');
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-  const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+  const calculatedHash = crypto
+    .createHmac('sha256', secretKey)
+    .update(dataCheckString)
+    .digest('hex');
 
   if (!timingSafeEqualHex(calculatedHash, hash)) {
     throw new Error('Bad Telegram initData hash');
@@ -96,33 +133,53 @@ export function validateTelegramInitData(initData: string, botToken: string, max
   return { user };
 }
 
+function buildAuth(
+  req: NextRequest,
+  telegramId: number,
+  user: TelegramUser | null
+): AuthContext {
+  const realRole = realRoleForTelegramId(telegramId);
+  const effective = effectiveRoleForRequest(req, telegramId, realRole);
+
+  return {
+    telegramId,
+    user,
+    isAdmin: effective.role === 'admin',
+    isWorker: effective.role === 'worker',
+    role: effective.role,
+    realRole,
+    isRoleOverride: effective.isOverride,
+    canTestWorker: effective.canTestWorker,
+  };
+}
+
 export function getAuthContext(req: NextRequest): AuthContext {
   const devMode = process.env.AUTH_DEV_MODE === '1';
   const devTelegramId = Number(process.env.DEV_TELEGRAM_ID || '0');
 
   if (devMode && devTelegramId > 0) {
-    const role = roleForTelegramId(devTelegramId);
-    return {
-      telegramId: devTelegramId,
-      user: { id: devTelegramId, first_name: role === 'worker' ? 'Dev Worker' : 'Dev Admin', username: 'dev' },
-      isAdmin: role === 'admin',
-      isWorker: role === 'worker',
-      role,
+    const realRole = realRoleForTelegramId(devTelegramId);
+    const user: TelegramUser = {
+      id: devTelegramId,
+      first_name:
+        realRole === 'worker'
+          ? 'Dev Worker'
+          : realRole === 'admin'
+            ? 'Dev Admin'
+            : 'Dev Client',
+      username: 'dev',
     };
+    return buildAuth(req, devTelegramId, user);
   }
 
   const initData = req.headers.get('x-telegram-init-data') || '';
-  const { user } = validateTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
+  const { user } = validateTelegramInitData(
+    initData,
+    process.env.TELEGRAM_BOT_TOKEN || ''
+  );
   if (!user?.id) throw new Error('Telegram user is missing');
 
-  const role = roleForTelegramId(user.id);
-  return {
-    telegramId: user.id,
-    user,
-    isAdmin: role === 'admin',
-    isWorker: role === 'worker',
-    role,
-  };
+  return buildAuth(req, user.id, user);
 }
 
 export function requireAdmin(req: NextRequest): AuthContext {

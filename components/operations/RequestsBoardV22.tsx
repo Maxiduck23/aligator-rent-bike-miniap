@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { roleTestHeaders } from "@/lib/clientRoleTest";
 
 type Props = { showToast: (s: string) => void; workerMode?: boolean };
 const TYPES: [string,string][] = [
@@ -18,7 +19,7 @@ const SUBTYPES: Record<string,[string,string][]> = {
   other_request:[["other","Другое"]],
 };
 function initData(){return typeof window==="undefined"?"":(window as any).Telegram?.WebApp?.initData||""}
-async function api<T>(url:string,opt:RequestInit={}):Promise<T>{const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json","x-telegram-init-data":initData(),...(opt.headers||{})}});const j=await r.json().catch(()=>({ok:false,error:`HTTP ${r.status}`}));if(!r.ok||!j.ok)throw new Error(typeof j.error==="string"?j.error:j.error?.message||"API error");return j.data}
+async function api<T>(url:string,opt:RequestInit={}):Promise<T>{const r=await fetch(url,{...opt,headers:{"Content-Type":"application/json","x-telegram-init-data":initData(),...roleTestHeaders(),...(opt.headers||{})}});const j=await r.json().catch(()=>({ok:false,error:`HTTP ${r.status}`}));if(!r.ok||!j.ok)throw new Error(typeof j.error==="string"?j.error:j.error?.message||"API error");return j.data}
 function money(v:any){return `${Math.round(Number(v||0)).toLocaleString("ru-RU")} Kč`}
 function typeLabel(v:string){return TYPES.find(x=>x[0]===v)?.[1]||v}
 function subtypeLabel(type:string,v:string){return SUBTYPES[type]?.find(x=>x[0]===v)?.[1]||v||"без подтипа"}

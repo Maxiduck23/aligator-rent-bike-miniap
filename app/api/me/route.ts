@@ -17,6 +17,9 @@ export async function GET(req: NextRequest) {
       is_admin: auth.isAdmin,
       is_worker: auth.isWorker,
       role: auth.role,
+      real_role: auth.realRole,
+      is_role_override: auth.isRoleOverride,
+      can_test_worker: auth.canTestWorker,
       user: auth.user,
       client: client || null,
     });

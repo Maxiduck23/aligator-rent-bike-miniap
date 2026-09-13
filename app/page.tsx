@@ -1,5 +1,6 @@
 "use client";
 // v26-worker-ops-contract
+// v27-role-test-assets-integrity
 
 import RentalContractForm from "@/components/rentals/RentalContractForm";
 import FinanceRangePanel from "@/components/finance/FinanceRangePanel";
@@ -11,6 +12,7 @@ import FleetCenterV23 from "@/components/fleet/FleetCenterV23";
 import BatteryMapV23 from "@/components/fleet/BatteryMapV23";
 import ClientCenterV23 from "@/components/clients/ClientCenterV23";
 import { useEffect, useMemo, useState } from "react";
+import { roleTestHeaders, setRoleTest } from "@/lib/clientRoleTest";
 
 declare global {
   interface Window {
@@ -157,6 +159,9 @@ type AuthMe = {
   is_admin: boolean;
   is_worker?: boolean;
   role?: "admin" | "worker" | "client";
+  real_role?: "admin" | "worker" | "client";
+  is_role_override?: boolean;
+  can_test_worker?: boolean;
   user: any;
   client: null | {
     client_id: number;
@@ -297,6 +302,7 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
     headers: {
       "Content-Type": "application/json",
       "x-telegram-init-data": initData(),
+      ...roleTestHeaders(),
       ...(options.headers || {}),
     },
   });
@@ -606,6 +612,16 @@ export default function Page() {
     window.setTimeout(() => setToast(""), 5200);
   }
 
+  function enableWorkerTest() {
+    setRoleTest("worker");
+    window.location.reload();
+  }
+
+  function disableRoleTest() {
+    setRoleTest(null);
+    window.location.reload();
+  }
+
   return (
     <main className="app">
       <div className="header">
@@ -613,11 +629,35 @@ export default function Page() {
           <div className="title">🚲 Aligator Rent CRM</div>
 
         </div>
-        <div className="badge" title={tgStatus}>
-          {tgStatus === "Telegram OK" ? "TG OK" : "TG ?"} ·{" "}
-          {auth?.role || (auth?.is_admin ? "admin" : auth?.is_worker ? "worker" : "client")}
+        <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <div className="badge" title={tgStatus}>
+            {tgStatus === "Telegram OK" ? "TG OK" : "TG ?"} ·{" "}
+            {auth?.role || (auth?.is_admin ? "admin" : auth?.is_worker ? "worker" : "client")}
+            {auth?.is_role_override ? " · TEST" : ""}
+          </div>
+          {auth?.can_test_worker && (
+            <button
+              className={`btn ${auth.is_role_override ? "warn" : ""}`}
+              onClick={auth.is_role_override ? disableRoleTest : enableWorkerTest}
+              title="Переключает и реальные API-права, а не только интерфейс"
+            >
+              {auth.is_role_override ? "↩️ Вернуться в admin" : "👷 Проверить worker"}
+            </button>
+          )}
         </div>
       </div>
+
+      {auth?.is_role_override && (
+        <div className="notice" style={{ marginBottom: 12, borderColor: "rgba(255,190,60,.55)" }}>
+          <b>⚠️ ТЕСТ WORKER</b>
+          <div className="small muted">
+            Telegram #{auth.telegram_id} сейчас использует реальные права worker. Admin-only API должны быть недоступны.
+          </div>
+          <button className="btn warn" onClick={disableRoleTest} style={{ marginTop: 8 }}>
+            Вернуться в admin
+          </button>
+        </div>
+      )}
 
       {loadingAuth && <div className="card">Загрузка авторизации...</div>}
       {authError && (
@@ -725,22 +765,38 @@ type WorkerTab = "bikes" | "batteries" | "assets" | "debts" | "requests" | "clie
 function WorkerApp({ showToast }: { showToast: (s: string) => void }) {
   const [tab, setTab] = useState<WorkerTab>("bikes");
   const [focusBikeId, setFocusBikeId] = useState<number | null>(null);
+
   return (
     <>
-      <div className="tabs">
+      <div className="worker-tabs-v27">
         <button className={`tab ${tab === "bikes" ? "active" : ""}`} onClick={() => setTab("bikes")}>🚲 Велики</button>
         <button className={`tab ${tab === "batteries" ? "active" : ""}`} onClick={() => setTab("batteries")}>🔋 Батареи</button>
+        <button className={`tab ${tab === "requests" ? "active" : ""}`} onClick={() => setTab("requests")}>📝 Запросы</button>
         <button className={`tab ${tab === "assets" ? "active" : ""}`} onClick={() => setTab("assets")}>🧾 Активы</button>
         <button className={`tab ${tab === "debts" ? "active" : ""}`} onClick={() => setTab("debts")}>⚠️ Долги</button>
-        <button className={`tab ${tab === "requests" ? "active" : ""}`} onClick={() => setTab("requests")}>📝 Запросы</button>
         <button className={`tab ${tab === "clients" ? "active" : ""}`} onClick={() => setTab("clients")}>👤 Клиенты</button>
       </div>
+
       {tab === "bikes" && <BikesTab showToast={showToast} initialBikeId={focusBikeId} workerMode />}
-      {tab === "batteries" && <BatteryMapV23 showToast={showToast} onOpenBike={(id) => { setFocusBikeId(id); setTab("bikes"); }} />}
+      {tab === "batteries" && (
+        <BatteryMapV23
+          showToast={showToast}
+          onOpenBike={(id) => {
+            setFocusBikeId(id);
+            setTab("bikes");
+          }}
+        />
+      )}
       {tab === "assets" && <AssetsTab showToast={showToast} workerMode />}
       {tab === "debts" && <WorkerDebtsTab showToast={showToast} />}
       {tab === "requests" && <RequestsBoardV22 showToast={showToast} workerMode />}
       {tab === "clients" && <WorkerClientsTab showToast={showToast} />}
+
+      <style>{`
+        .worker-tabs-v27{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:12px;overflow:visible}
+        .worker-tabs-v27 .tab{min-width:0;width:100%;white-space:normal;text-align:center}
+        @media(max-width:700px){.worker-tabs-v27{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      `}</style>
     </>
   );
 }
@@ -2437,7 +2493,13 @@ function AssetsTab({ showToast, workerMode = false }: { showToast: (s: string) =
   const rows = data?.recent || data?.transactions || [];
   return (
     <div className="grid">
-      <AssetOperationsBlock showToast={showToast} reload={load} workerMode={workerMode} />
+      <AssetOperationsBlock
+        showToast={showToast}
+        reload={load}
+        workerMode={workerMode}
+        nextBikeId={data?.next_bike_id}
+        nextBatteryId={data?.next_battery_id}
+      />
       {!workerMode && <div className="card wide">
         <div className="space">
           <h3>📜 История активов</h3>
@@ -2468,7 +2530,26 @@ function AssetsTab({ showToast, workerMode = false }: { showToast: (s: string) =
   );
 }
 
-function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showToast: (s: string) => void; reload: () => Promise<void>; workerMode?: boolean }) {
+function newAssetRequestKey() {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  } catch {}
+  return `asset-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function AssetOperationsBlock({
+  showToast,
+  reload,
+  workerMode = false,
+  nextBikeId,
+  nextBatteryId,
+}: {
+  showToast: (s: string) => void;
+  reload: () => Promise<void>;
+  workerMode?: boolean;
+  nextBikeId?: number;
+  nextBatteryId?: number;
+}) {
   const [assetType, setAssetType] = useState("bike");
   const [action, setAction] = useState("purchase");
   const [date, setDate] = useState(today());
@@ -2483,40 +2564,103 @@ function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showT
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [last, setLast] = useState<any>(null);
-  useEffect(() => { if (workerMode && assetType !== "bike") setAssetType("bike"); }, [workerMode, assetType]);
+  const [requestKey, setRequestKey] = useState(newAssetRequestKey);
+
+  useEffect(() => {
+    if (workerMode && assetType !== "bike") setAssetType("bike");
+  }, [workerMode, assetType]);
 
   async function submit() {
+    if (loading) return;
     setError("");
     setLast(null);
+
+    const amountNumber = Number(amount);
+    if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+      setError("Сумма должна быть больше 0.");
+      return;
+    }
+
+    if (assetType === "bike" && action === "purchase") {
+      if (!brand.trim()) return setError("Укажи бренд.");
+      if (!model.trim()) return setError("Укажи модель.");
+      if (bikeId.trim() && (!Number.isInteger(Number(bikeId)) || Number(bikeId) <= 0)) {
+        return setError("ID велика должен быть положительным целым числом или пустым.");
+      }
+    }
+
+    if (assetType === "bike" && action === "sale" && !bikeId.trim()) {
+      return setError("Для продажи укажи ID существующего велика.");
+    }
+
+    if (assetType === "battery" && action === "purchase") {
+      if (!Number.isInteger(Number(typeId)) || Number(typeId) <= 0) {
+        return setError("Для покупки батареи укажи корректный type_id.");
+      }
+      if (batteryId.trim() && (!Number.isInteger(Number(batteryId)) || Number(batteryId) <= 0)) {
+        return setError("ID батареи должен быть положительным целым числом или пустым.");
+      }
+    }
+
+    if (assetType === "battery" && action === "sale" && !batteryId.trim()) {
+      return setError("Для продажи укажи ID существующей батареи.");
+    }
+
+    if (action === "sale") {
+      const id = assetType === "bike" ? bikeId : batteryId;
+      if (!window.confirm(`Записать продажу ${assetType} #${id} на ${money(amountNumber)}?`)) return;
+    }
+
     setLoading(true);
     try {
       const body: any = {
         asset_type: assetType,
         action,
         date,
-        amount: Number(amount),
-        notes,
+        amount: amountNumber,
+        notes: notes.trim() || null,
+        request_key: requestKey,
       };
+
       if (assetType === "bike") {
-        body.bike_id = Number(bikeId);
+        body.bike_id = bikeId.trim() ? Number(bikeId) : null;
         if (action === "purchase") {
-          body.brand = brand;
-          body.model = model;
-          body.vin = vin;
+          body.brand = brand.trim();
+          body.model = model.trim();
+          body.vin = vin.trim() || null;
         }
       } else {
-        body.battery_id = batteryId ? Number(batteryId) : null;
+        body.battery_id = batteryId.trim() ? Number(batteryId) : null;
         if (action === "purchase") {
           body.type_id = Number(typeId);
-          body.bike_id = bikeId ? Number(bikeId) : null;
+          body.bike_id = bikeId.trim() ? Number(bikeId) : null;
         }
       }
+
       const res = await api<any>("/api/admin/assets", {
         method: "POST",
         body: JSON.stringify(body),
       });
+
       setLast(res);
-      showToast(action === "purchase" ? "Покупка записана" : "Продажа записана");
+      const createdId = assetType === "bike" ? res?.bike_id : res?.battery_id;
+      showToast(
+        action === "purchase"
+          ? `Покупка записана · ${assetType} #${createdId ?? "?"}${res?.auto_id ? " · ID выбран автоматически" : ""}`
+          : `Продажа записана · ${assetType} #${createdId ?? "?"}`,
+      );
+
+      setAmount("");
+      setNotes("");
+      setRequestKey(newAssetRequestKey());
+      if (action === "purchase") {
+        if (assetType === "bike") {
+          setBikeId("");
+          setVin("");
+        } else {
+          setBatteryId("");
+        }
+      }
       await reload();
     } catch (e: any) {
       const msg = e?.message || "Операция с активом не сработала";
@@ -2529,93 +2673,76 @@ function AssetOperationsBlock({ showToast, reload, workerMode = false }: { showT
 
   return (
     <div className="card wide">
-      <h3>🧾 Покупка / продажа великов и батарей</h3>
-      <p className="small muted">
-        Покупка велика/батареи создаёт запись актива и расход в <span className="code">business_expenses</span>.
-        Продажа фиксируется в <span className="code">asset_transactions</span> и помечает актив как sold.
-      </p>
+      <div className="space">
+        <div>
+          <h3>🧾 Покупка / продажа активов</h3>
+          <p className="small muted">
+            v27 блокирует повторную покупку/продажу одного ID на уровне БД.
+            Пустой ID при покупке = следующий ID после максимального.
+          </p>
+        </div>
+        <span className="pill ok">integrity v27</span>
+      </div>
+
       <div className="formgrid">
-        <label>
-          Актив
-          <select className="select" value={assetType} onChange={(e) => setAssetType(e.target.value)}>
+        <label>Актив
+          <select className="select" value={assetType} disabled={loading} onChange={(e) => setAssetType(e.target.value)}>
             <option value="bike">Велик</option>
             {!workerMode && <option value="battery">Батарея</option>}
           </select>
         </label>
-        <label>
-          Операция
-          <select className="select" value={action} onChange={(e) => setAction(e.target.value)}>
+        <label>Операция
+          <select className="select" value={action} disabled={loading} onChange={(e) => setAction(e.target.value)}>
             <option value="purchase">Покупка / расход</option>
             <option value="sale">Продажа</option>
           </select>
         </label>
-        <label>
-          Дата
-          <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <label>Дата
+          <input className="input" type="date" value={date} disabled={loading} onChange={(e) => setDate(e.target.value)} />
         </label>
-        <label>
-          Сумма Kč
-          <input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="например 30000" />
+        <label>Сумма Kč
+          <input className="input" type="number" min={1} value={amount} disabled={loading} onChange={(e) => setAmount(e.target.value)} placeholder="например 30000" />
         </label>
       </div>
+
       <div className="formgrid">
-        {assetType === "bike" && (
-          <>
-            <label>
-              № велика
-              <input className="input" value={bikeId} onChange={(e) => setBikeId(e.target.value)} placeholder="например 93" />
-            </label>
-            {action === "purchase" && (
-              <>
-                <label>
-                  Бренд
-                  <input className="input" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Duotts / Engwe" />
-                </label>
-                <label>
-                  Модель
-                  <input className="input" value={model} onChange={(e) => setModel(e.target.value)} placeholder="C29 / M20" />
-                </label>
-                <label>
-                  VIN / серийник
-                  <input className="input" value={vin} onChange={(e) => setVin(e.target.value)} />
-                </label>
-              </>
-            )}
-          </>
-        )}
-        {assetType === "battery" && (
-          <>
-            <label>
-              ID батареи {action === "purchase" ? "(можно пусто)" : ""}
-              <input className="input" value={batteryId} onChange={(e) => setBatteryId(e.target.value)} placeholder="например 120" />
-            </label>
-            {action === "purchase" && (
-              <>
-                <label>
-                  type_id батареи
-                  <input className="input" value={typeId} onChange={(e) => setTypeId(e.target.value)} placeholder="например 2" />
-                </label>
-                <label>
-                  Привязать к велику №
-                  <input className="input" value={bikeId} onChange={(e) => setBikeId(e.target.value)} placeholder="необязательно" />
-                </label>
-              </>
-            )}
-          </>
-        )}
+        {assetType === "bike" && <>
+          <label>№ велика {action === "purchase" ? "(можно пусто)" : ""}
+            <input className="input" inputMode="numeric" value={bikeId} disabled={loading} onChange={(e) => setBikeId(e.target.value.replace(/[^\d]/g, ""))} placeholder={action === "purchase" ? `пусто → сервер выберет #${nextBikeId || "следующий"}` : "ID существующего велика"} />
+            {action === "purchase" && <span className="small muted">Сейчас ожидаемый следующий ID: #{nextBikeId || "?"}. Сервер проверит заново в момент сохранения.</span>}
+          </label>
+          {action === "purchase" && <>
+            <label>Бренд<input className="input" value={brand} disabled={loading} onChange={(e) => setBrand(e.target.value)} placeholder="Duotts / Engwe" /></label>
+            <label>Модель<input className="input" value={model} disabled={loading} onChange={(e) => setModel(e.target.value)} placeholder="C29 / M20" /></label>
+            <label>VIN / серийник<input className="input" value={vin} disabled={loading} onChange={(e) => setVin(e.target.value)} placeholder="необязательно" /></label>
+          </>}
+        </>}
+
+        {assetType === "battery" && <>
+          <label>ID батареи {action === "purchase" ? "(можно пусто)" : ""}
+            <input className="input" inputMode="numeric" value={batteryId} disabled={loading} onChange={(e) => setBatteryId(e.target.value.replace(/[^\d]/g, ""))} placeholder={action === "purchase" ? `пусто → сервер выберет #${nextBatteryId || "следующий"}` : "ID существующей батареи"} />
+          </label>
+          {action === "purchase" && <>
+            <label>type_id батареи<input className="input" inputMode="numeric" value={typeId} disabled={loading} onChange={(e) => setTypeId(e.target.value.replace(/[^\d]/g, ""))} placeholder="например 2" /></label>
+            <label>Привязать к велику №<input className="input" inputMode="numeric" value={bikeId} disabled={loading} onChange={(e) => setBikeId(e.target.value.replace(/[^\d]/g, ""))} placeholder="необязательно" /></label>
+          </>}
+        </>}
       </div>
-      <label>
-        Заметка
-        <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="поставщик, причина, детали" />
+
+      <label>Заметка
+        <input className="input" value={notes} disabled={loading} onChange={(e) => setNotes(e.target.value)} placeholder="поставщик, причина, детали" />
       </label>
+
       <button className="btn primary" disabled={loading || !amount} onClick={submit}>
-        {loading ? "Записываю..." : "Записать актив"}
+        {loading ? "Записываю..." : action === "purchase" ? "Записать покупку" : "Записать продажу"}
       </button>
-      {error && <p className="dangerText">{error}</p>}
-      {last && <p className="small okText">OK: {JSON.stringify(last)}</p>}
+
+      {error && <div className="item critical" style={{marginTop:10}}><b>Операция отклонена</b><div className="dangerText small">{error}</div></div>}
+      {last && <div className="item ok" style={{marginTop:10}}><b>✅ Сохранено</b><div className="small">{assetType} #{assetType === "bike" ? last?.bike_id : last?.battery_id}{last?.auto_id ? " · ID выбран автоматически" : ""}</div>{last?.transaction_id && <div className="small muted">asset transaction #{last.transaction_id}{last?.expense_id ? ` · expense #${last.expense_id}` : ""}</div>}</div>}
+
       <hr className="hr" />
       <p className="small muted">
-        Категории расходов для будущей статистики: <span className="code">bike_purchase</span>, <span className="code">battery_purchase</span>, <span className="code">transport</span>, <span className="code">parts_purchase</span>, <span className="code">vehicle_parts</span>, <span className="code">vehicle_repair</span>, <span className="code">fuel</span>, <span className="code">parking</span>, <span className="code">vehicle_insurance</span>.
+        Защита работает и на сервере, и в PostgreSQL: повторный ID не обновляет старый актив и не создаёт второй расход; двойной тап не должен создавать вторую purchase/sale transaction; актив с active rental нельзя продать.
       </p>
     </div>
   );
