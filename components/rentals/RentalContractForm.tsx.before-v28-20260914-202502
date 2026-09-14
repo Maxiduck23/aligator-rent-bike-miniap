@@ -69,9 +69,9 @@ export default function RentalContractForm({ bike, active, showToast, reload, wo
   const [newBikeId, setNewBikeId] = useState("");
   const [keepBatteries, setKeepBatteries] = useState(true);
 
-  // Physical battery replacement/add. Same controls for admin and worker.
+  // Battery replacement/add.
   const [extraSlot, setExtraSlot] = useState<BatterySlot>({ mode: "temporary" });
-  const [replaceBatteryId, setReplaceBatteryId] = useState("");
+  const [extraChargeNow, setExtraChargeNow] = useState(false);
 
   // Admin-only close.
   const [closeStatus, setCloseStatus] = useState("free");
@@ -197,10 +197,10 @@ export default function RentalContractForm({ bike, active, showToast, reload, wo
           rental_id: active.id,
           new_bike_id: Number(newBikeId),
           keep_current_batteries: keepBatteries,
-          notes: workerMode ? "worker transfer v28" : "admin transfer v28",
+          notes: workerMode ? "worker transfer v26" : "admin transfer v26",
         }),
       });
-      showToast(`Клиент пересажен на bike #${newBikeId}. Договор и деньги не менялись; батареи обработаны физически.`);
+      showToast(`Клиент пересажен на bike #${newBikeId} без нового платежа/начисления`);
       setNewBikeId("");
       await reload();
     } catch (e: any) {
@@ -217,7 +217,7 @@ export default function RentalContractForm({ bike, active, showToast, reload, wo
       setBusy(true);
       await request("/api/admin/rental-contracts/equipment", {
         method: "DELETE",
-        body: JSON.stringify({ rental_id: active.id, battery_id: id, notes: workerMode ? "worker physical remove v28" : "admin physical remove v28" }),
+        body: JSON.stringify({ rental_id: active.id, battery_id: id, notes: workerMode ? "worker battery replace v26" : "admin battery replace v26" }),
       });
       showToast(`Батарея #${id} снята с договора`);
       await load();
@@ -229,72 +229,21 @@ export default function RentalContractForm({ bike, active, showToast, reload, wo
     }
   }
 
-  async function addBatteryPhysical() {
+  async function addBattery() {
     if (!active?.id) return;
     try {
       validateSlot(extraSlot, "Новая батарея");
       setBusy(true);
-      const result = await request<any>("/api/admin/rental-contracts/equipment", {
+      await request("/api/admin/rental-contracts/add-battery", {
         method: "POST",
         body: JSON.stringify({
-          action: "attach",
           rental_id: active.id,
           battery: extraSlot,
-          notes: workerMode ? "worker physical attach v28" : "admin physical attach v28",
+          effective_date: localToday(),
+          charge_now: workerMode ? false : extraChargeNow,
         }),
       });
-      showToast(`Батарея #${result?.battery_id || "?"} выдана физически. Цена/долг/оплаты НЕ менялись.`);
-      await load();
-      await reload();
-    } catch (e: any) {
-      showToast(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function replaceBatteryPhysical() {
-    if (!active?.id) return;
-    if (!Number(replaceBatteryId)) return showToast("Выбери батарею, которую заменяем");
-    try {
-      validateSlot(extraSlot, "Новая батарея");
-      setBusy(true);
-      const result = await request<any>("/api/admin/rental-contracts/equipment", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "replace",
-          rental_id: active.id,
-          old_battery_id: Number(replaceBatteryId),
-          battery: extraSlot,
-          notes: workerMode ? "worker physical replacement v28" : "admin physical replacement v28",
-        }),
-      });
-      showToast(`Батарея #${result?.old_battery_id} заменена на #${result?.new_battery_id}. Финансы НЕ менялись.`);
-      setReplaceBatteryId("");
-      await load();
-      await reload();
-    } catch (e: any) {
-      showToast(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function repairBatteryLinks() {
-    if (!active?.id) return;
-    try {
-      setBusy(true);
-      const result = await request<any>("/api/admin/rental-contracts/equipment", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "repair",
-          rental_id: active.id,
-        }),
-      });
-      const count = Number(result?.recovered_count || 0);
-      showToast(count
-        ? `Восстановлено связей батарей: ${count}`
-        : "На текущем велике не найдено legacy-батарей для восстановления");
+      showToast(!workerMode && extraChargeNow ? "Батарея добавлена и создано начисление" : "Батарея добавлена без начисления");
       await load();
       await reload();
     } catch (e: any) {
@@ -393,62 +342,12 @@ export default function RentalContractForm({ bike, active, showToast, reload, wo
     <div className="row"><input className="input" style={{ maxWidth: 180 }} inputMode="numeric" placeholder="новый bike ID" value={newBikeId} onChange={(e) => setNewBikeId(e.target.value.replace(/\D/g, ""))} /><label className="row small"><input type="checkbox" checked={keepBatteries} onChange={(e) => setKeepBatteries(e.target.checked)} /> оставить текущие батареи</label><button className="btn warn" disabled={busy || !newBikeId} onClick={transferBike}>Пересадить</button></div>
 
     <hr className="hr" />
-    <h4>🔋 Физические батареи договора</h4>
-    <div className="notice">
-      <b>Для админа и работника одинаково.</b> Добавление, снятие и замена здесь меняют только фактически выданные батареи.
-      Цена договора, payment_rules, начисления, оплаты и долг не изменяются.
-    </div>
-
-    <div className="list">
-      {equipment.map((r: any) => {
-        const b = r.batteries || {};
-        return <div className="item" key={r.id}>
-          <div className="space">
-            <b>{b.inventory_code || `battery #${r.battery_id}`}</b>
-            <button className="btn danger" disabled={busy} onClick={() => removeBattery(r.battery_id)}>Убрать</button>
-          </div>
-          <div className="small muted">
-            DB #{r.battery_id} · {b.indexing_status || "-"} · bike #{b.bike_id ?? bike.id}
-          </div>
-        </div>;
-      })}
-      {!equipment.length && <div className="item">
-        <b>Нет active battery_rentals.</b>
-        <p className="small muted">
-          Если это старый договор после пересадки, сначала попробуй восстановить связи по батареям, которые уже стоят на текущем велике.
-        </p>
-        <button className="btn warn" disabled={busy} onClick={repairBatteryLinks}>🔧 Восстановить связи батарей</button>
-      </div>}
-    </div>
-
+    <h4>🔋 Замена / комплектация батарей</h4>
+    <div className="list">{equipment.map((r: any) => { const b = r.batteries || {}; return <div className="item" key={r.id}><div className="space"><b>{b.inventory_code || `battery #${r.battery_id}`}</b><button className="btn danger" disabled={busy} onClick={() => removeBattery(r.battery_id)}>Убрать</button></div><div className="small muted">DB #{r.battery_id} · {b.indexing_status || "-"}</div></div>; })}{!equipment.length && <p className="muted">Нет active battery_rentals.</p>}</div>
     <BatterySlotEditor slot={extraSlot} onChange={(p) => setExtraSlot((s) => ({ ...s, ...p }))} />
-
-    <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-      <button className="btn" disabled={busy} onClick={addBatteryPhysical}>➕ Выдать батарею физически</button>
-
-      {equipment.length > 0 && <>
-        <select
-          className="select"
-          style={{ maxWidth: 260 }}
-          value={replaceBatteryId}
-          onChange={(e) => setReplaceBatteryId(e.target.value)}
-        >
-          <option value="">какую батарею заменить</option>
-          {equipment.map((r: any) => {
-            const b = r.batteries || {};
-            return <option key={r.id} value={r.battery_id}>
-              {b.inventory_code || `battery #${r.battery_id}`}
-            </option>;
-          })}
-        </select>
-        <button className="btn warn" disabled={busy || !replaceBatteryId} onClick={replaceBatteryPhysical}>🔄 Заменить атомарно</button>
-      </>}
-    </div>
-
-    <p className="small muted">
-      Платную дополнительную батарею не надо проводить этой кнопкой: сначала меняется физический комплект,
-      а денежные условия договора — отдельным явным действием. Worker через этот блок финансовые условия менять не может.
-    </p>
+    {!workerMode && <label className="row small"><input type="checkbox" checked={extraChargeNow} onChange={(e) => setExtraChargeNow(e.target.checked)} /> создать начисление за доп. батарею сейчас</label>}
+    {workerMode && <p className="small muted">Работник меняет физическую батарею без автоматического денежного начисления.</p>}
+    <button className="btn" disabled={busy} onClick={addBattery}>➕ Добавить батарею</button>
 
     {!workerMode && <><hr className="hr" /><div className="row"><select className="select" style={{ maxWidth: 180 }} value={closeStatus} onChange={(e) => setCloseStatus(e.target.value)}><option value="free">free</option><option value="repair">repair</option><option value="waiting">waiting</option><option value="sold">sold</option></select><button className="btn danger" disabled={busy} onClick={closeContract}>Закрыть договор</button></div></>}
     <p className="small muted">Договор и реальные деньги разделены. Изменение договора само по себе не создаёт оплату.</p>
